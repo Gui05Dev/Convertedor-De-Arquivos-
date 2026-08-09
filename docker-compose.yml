@@ -1,0 +1,17 @@
+services:
+  copacol-pdf-tools:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - MAX_FILE_SIZE_MB=100
+      - CONVERT_TIMEOUT_MS=90000
+      - LIBREOFFICE_BIN=/usr/bin/soffice
+      - MAX_CONCURRENT_CONVERSIONS=2
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G

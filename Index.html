@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Ferramentas de PDF da Copacol: juntar, dividir, girar, remover páginas, comprimir e converter imagens — tudo no seu navegador." />
+  <title>Copacol — Ferramentas de PDF</title>
+  <script>
+    /* Aplica o tema salvo antes do primeiro paint, pra não piscar claro->escuro. */
+    (function () {
+      var saved = localStorage.getItem('theme');
+      var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <link rel="icon" type="image/svg+xml" href="img/favicon.svg" />
+  <link rel="alternate icon" type="image/png" href="img/Copacol 01 final LARANJA PANTONE.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&family=Sora:wght@600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"
+    integrity="sha384-weMABwrltA6jWR8DDe9Jp5blk+tZQh7ugpCsF3JwSA53WZM9/14PjS5LAJNHNjAI"
+    crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-bar">
+    <a href="#" class="header-logo">
+      <img src="img/Copacol_BRANCO_PANTONE.png" alt="Copacol" />
+    </a>
+    <button class="theme-toggle" id="themeToggle" type="button" aria-label="Alternar tema claro/escuro" title="Alternar tema claro/escuro">
+      <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="4"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+        <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+      </svg>
+      <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main class="main">
+  <div class="section-heading"><h2>Ferramentas disponíveis</h2></div>
+  <!-- Cards gerados dinamicamente a partir de TOOLS em script.js (ver renderToolsGrid) -->
+  <div class="tools-grid" id="toolsGrid"></div>
+</main>
+ 
+<footer class="footer">
+  <div class="footer-waves">
+    <img src="img/Ondas.Copacol.png" alt="" role="presentation" />
+  </div>
+  <div class="footer-body">
+    <div class="footer-inner">
+      <div class="footer-bottom-info">
+        <p>© 2026 Copacol — Cooperativa Agroindustrial. Todos os direitos reservados.</p>
+      </div>
+    </div>
+  </div>
+</footer>
+ 
+<div class="modal-overlay" id="modalOverlay" role="dialog" aria-modal="true">
+  <div class="modal-box" id="modalBox">
+ 
+    <div class="modal-header">
+      <div class="modal-icon" id="modalIcon"></div>
+      <div class="modal-title-group">
+        <div class="modal-title" id="modalTitle">Ferramenta</div>
+        <div class="modal-subtitle" id="modalSubtitle">Selecione um arquivo para começar.</div>
+      </div>
+      <button class="modal-close" id="modalClose" aria-label="Fechar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+ 
+    <div class="modal-body">
+ 
+      <div class="error-banner" id="errorBanner">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span id="errorMessage">Erro ao processar o arquivo.</span>
+      </div>
+ 
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" multiple />
+        <div class="dz-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <div class="dz-title">Arraste e solte aqui</div>
+        <div class="dz-sub">ou <strong>clique para selecionar</strong> — máx. 100 MB</div>
+      </div>
+ 
+      <div class="files-list" id="filesList"></div>
+      <div id="extraOptions"></div>
+ 
+      <div class="progress-wrap" id="progressWrap">
+        <div class="progress-label">
+          <span id="progressText">Processando...</span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-status" id="progressStatus">Aguarde enquanto o arquivo é processado.</div>
+      </div>
+ 
+      <div class="success-state" id="successState">
+        <div class="success-check">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </div>
+        <div class="success-title">Processado com sucesso!</div>
+        <div class="success-sub" id="successSub">Seu arquivo está pronto para download.</div>
+      </div>
+ 
+    </div>
+ 
+    <!-- Populado por restoreFooter() em script.js -->
+    <div class="modal-footer" id="modalFooter"></div>
+ 
+  </div>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
