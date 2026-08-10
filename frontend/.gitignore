@@ -1,0 +1,15 @@
+node_modules/
+
+# Saída do `vite build` — gerada na imagem do frontend, não versionada.
+dist/
+
+# Configuração e credenciais reais nunca vão pro repositório —
+# o que é versionado é o backend/.env.example.
+.env
+.env.local
+*.env
+./node*
+!*.env.example
+
+.claude/settings.local.json
+npm-debug.log*

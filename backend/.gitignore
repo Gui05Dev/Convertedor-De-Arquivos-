@@ -1,0 +1,44 @@
+# Dependências — reinstaladas com `npm ci` a partir do package-lock.json.
+node_modules/
+
+# Configuração e credenciais reais nunca vão pro repositório.
+# O que é versionado é o .env.example, com os campos em branco.
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+
+# Python — o conversor pdf2docx_convert.py é chamado pelo runConverter.js.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Saída de testes e cobertura (`npm test` / `npm run test:e2e`).
+coverage/
+*.lcov
+test-results/
+
+# Artefatos temporários. Em produção os arquivos vão pro os.tmpdir() e são
+# limpos pelo tempdir.js, mas debug local às vezes deixa sobra aqui.
+tmp/
+temp/
+uploads/
+*.tmp
+
+# Editor / ambiente local
+.claude/settings.local.json
+.vscode/
+.idea/
+*.swp
+
+# Sistema operacional
+Thumbs.db
+Desktop.ini
+.DS_Store

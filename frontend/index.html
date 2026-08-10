@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Ferramentas de PDF da Copacol: juntar, dividir, girar, remover páginas, comprimir e converter documentos." />
+  <title>Copacol — Ferramentas de PDF</title>
+
+  <!-- Único script inline da aplicação, e de propósito: precisa rodar antes do primeiro
+       paint pra página não piscar claro->escuro enquanto o React carrega. O resto do
+       tema é gerenciado pelo hook useTheme. -->
+  <script>
+    (function () {
+      var saved = localStorage.getItem('theme');
+      var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+
+  <link rel="icon" type="image/svg+xml" href="/img/favicon.svg" />
+  <link rel="alternate icon" type="image/png" href="/img/Copacol_LARANJA_PANTONE.png" />
+</head>
+<body>
+  <!-- Este arquivo é só a casca da SPA: toda a interface é montada pelo React a partir
+       de src/main.jsx. Estilos e fontes entram pelos imports do bundle, então nada aqui
+       aponta pra fora desta origem. -->
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
