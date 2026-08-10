@@ -1,17 +1,42 @@
+# Dois serviços independentes. O navegador só alcança o `frontend`; o `backend` não
+# publica porta nenhuma no host — só o frontend fala com ele, pela rede interna do
+# Compose. É isso que garante que nenhuma configuração ou credencial do backend
+# precise (ou possa) trafegar até o navegador.
+
 services:
-  copacol-pdf-tools:
-    build: .
-    ports:
-      - "3000:3000"
-    environment:
-      - PORT=3000
-      - MAX_FILE_SIZE_MB=100
-      - CONVERT_TIMEOUT_MS=90000
-      - LIBREOFFICE_BIN=/usr/bin/soffice
-      - MAX_CONCURRENT_CONVERSIONS=2
+  backend:
+    build: ./backend
+    # Toda a configuração e as credenciais vêm daqui. Copie backend/.env.example
+    # para backend/.env antes do primeiro `docker compose up`.
+    env_file:
+      - ./backend/.env
+    # `expose` em vez de `ports`: visível só para os outros serviços do compose.
+    expose:
+      - "3000"
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          # Cada conversão sobe um LibreOffice/pdf2docx; ver MAX_CONCURRENT_CONVERSIONS.
           cpus: '2'
           memory: 2G
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    environment:
+      # Porta que o nginx escuta DENTRO do container. Tem que ser a mesma do lado
+      # direito do mapeamento em `ports` acima — mudar uma sem a outra derruba o acesso.
+      NGINX_PORT: 80
+      # Nome do serviço na rede do compose — o valor nunca chega ao navegador,
+      # é usado só pelo nginx no proxy de /api.
+      BACKEND_ORIGIN: http://backend:3000
+      # Precisa ser >= MAX_FILE_SIZE_MB do backend, senão o nginx corta antes.
+      MAX_UPLOAD_SIZE: 100m
+      # Precisa ser > CONVERT_TIMEOUT_MS do backend, senão o proxy desiste primeiro.
+      PROXY_TIMEOUT: 120s
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

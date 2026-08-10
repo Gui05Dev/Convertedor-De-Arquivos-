@@ -1,3 +1,34 @@
+# Rede de segurança da raiz. As regras específicas de cada serviço ficam em
+# backend/.gitignore e frontend/.gitignore — isto aqui cobre o que sobrar,
+# principalmente o _legacy-monolito/, que não tem .gitignore próprio.
+
+# Dependências, em qualquer nível.
 node_modules/
+
+# Configuração e credenciais reais. Versionado é só o backend/.env.example.
 .env
+.env.*
+!.env.example
+
+# Build
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Python (o conversor pdf2docx roda via script .py)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor / ambiente local
 .claude/settings.local.json
+.vscode/
+.idea/
+
+# Sistema operacional
+Thumbs.db
+Desktop.ini
+.DS_Store
