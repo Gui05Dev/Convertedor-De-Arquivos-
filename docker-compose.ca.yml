@@ -1,0 +1,14 @@
+# Opcional: Keycloak corporativo com certificado emitido por AC interna da Copacol.
+# Coloque a cadeia da AC (PEM) em deploy/ca/ac-copacol.pem e suba com:
+#   docker compose -f docker-compose.yml -f docker-compose.ca.yml up -d
+services:
+  oauth2-proxy:
+    environment:
+      OAUTH2_PROXY_PROVIDER_CA_FILES: /etc/conversor/ac-copacol.pem
+    volumes:
+      - ./deploy/ca/ac-copacol.pem:/etc/conversor/ac-copacol.pem:ro
+  frontend:
+    environment:
+      OIDC_CA_FILE: /etc/conversor/ac-copacol.pem
+    volumes:
+      - ./deploy/ca/ac-copacol.pem:/etc/conversor/ac-copacol.pem:ro

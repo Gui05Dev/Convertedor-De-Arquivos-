@@ -726,3 +726,6 @@ ul { list-style: none; }
   .recent-actions { grid-column: 2; grid-row: 1 / span 2; flex-direction: column; }
   .modal-overlay { padding: .5rem; }
 }
+
+.footer-link { text-decoration: underline; }
+.footer-link:focus-visible { outline: 2px solid white; outline-offset: 2px; }
