@@ -195,6 +195,26 @@ O nome `keycloak.localhost` funciona no Chrome/Edge/Firefox (resolvem `*.localho
 para a própria máquina) e dentro dos containers (alias de rede). Nunca use este
 perfil com usuários reais.
 
+### Teste na rede local (Windows, um clique)
+
+Para mostrar o conversor a colegas na mesma rede, sem Keycloak corporativo nem HTTPS:
+
+1. Abra o Docker Desktop e espere ficar *Running*.
+2. Dê dois cliques em `scripts\rede-local.cmd` (ou rode
+   `powershell -ExecutionPolicy Bypass -File scripts\rede-local.ps1`).
+3. O script descobre o IP da máquina, gera `.env.rede` com segredos aleatórios, sobe tudo
+   com o Keycloak de teste e mostra o endereço (`http://<IP>:8080`), os usuários
+   (`alice`, `bob`) e a senha.
+
+Para liberar o firewall automaticamente, rode como administrador na primeira vez.
+Para parar: `scripts\rede-local.ps1 -Parar`. Se o IP da máquina mudar, rode de novo.
+
+É **só para teste**: o tráfego vai em HTTP e os usuários são fictícios. Não envie
+documentos reais. Como funciona: o navegador fala com o Keycloak pelo IP
+(`OIDC_ISSUER=http://<IP>:8180/...`) e os containers falam com ele pelo nome interno
+(`OIDC_INTERNAL_URL=http://keycloak:8180/...`); o `iss` dos tokens continua sendo
+conferido contra `OIDC_ISSUER`.
+
 ---
 
 ## Operação

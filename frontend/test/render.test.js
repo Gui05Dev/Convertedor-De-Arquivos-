@@ -173,7 +173,9 @@ async function closeModal(page) {
   console.log('\n-- higiene --');
   check('nenhuma requisição a terceiros após o login', externalRequests.length === 0, externalRequests.join(' | '));
   check('sem erro de JS', pageErrors.length === 0, pageErrors.join(' | '));
-  check('sem erro no console (exceto respostas 4xx esperadas)', consoleErrors.every((e) => /status of 4\d\d/.test(e)), consoleErrors.join(' | '));
+  // Em HTTP (teste pela rede sem certificado) o navegador avisa que ignora o COOP — esperado.
+  const relevant = consoleErrors.filter((e) => !/status of 4\d\d/.test(e) && !/Cross-Origin-Opener-Policy header has been ignored/.test(e));
+  check('sem erro no console (exceto respostas 4xx e aviso de HTTP)', relevant.length === 0, relevant.join(' | '));
 
   await browser.close();
   console.log(`\n=== ${pass} passaram, ${fail} falharam ===`);

@@ -2,7 +2,7 @@
   "realm": "copacol",
   "displayName": "Copacol (homologação local — SÓ PARA TESTE)",
   "enabled": true,
-  "sslRequired": "external",
+  "sslRequired": "none",
   "registrationAllowed": false,
   "loginWithEmailAllowed": false,
   "bruteForceProtected": true,

@@ -67,6 +67,16 @@ services:
     environment:
       OAUTH2_PROXY_PROVIDER: keycloak-oidc
       OAUTH2_PROXY_OIDC_ISSUER_URL: ${OIDC_ISSUER}
+      # Endereços explícitos em vez de descoberta automática: o navegador usa o endereço
+      # público do Keycloak (OIDC_ISSUER) e os containers usam OIDC_INTERNAL_URL, que pode
+      # ser outro (ex.: Keycloak de teste acessado pela rede). O "iss" dos tokens continua
+      # sendo conferido contra OIDC_ISSUER.
+      OAUTH2_PROXY_SKIP_OIDC_DISCOVERY: "true"
+      OAUTH2_PROXY_LOGIN_URL: ${OIDC_ISSUER}/protocol/openid-connect/auth
+      OAUTH2_PROXY_REDEEM_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/token
+      OAUTH2_PROXY_OIDC_JWKS_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/certs
+      OAUTH2_PROXY_PROFILE_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/userinfo
+      OAUTH2_PROXY_VALIDATE_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/userinfo
       OAUTH2_PROXY_CLIENT_ID: ${OIDC_CLIENT_ID}
       OAUTH2_PROXY_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?defina OIDC_CLIENT_SECRET no .env}
       OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
@@ -88,7 +98,7 @@ services:
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
       OAUTH2_PROXY_PASS_ACCESS_TOKEN: "true"
       OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
-      OAUTH2_PROXY_BACKEND_LOGOUT_URL: ${OIDC_ISSUER}/protocol/openid-connect/logout?id_token_hint={id_token}
+      OAUTH2_PROXY_BACKEND_LOGOUT_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/logout?id_token_hint={id_token}
       OAUTH2_PROXY_SHOW_DEBUG_ON_ERROR: "false"
       # Keycloak com certificado de AC interna: ver docker-compose.ca.yml.
     networks: [edge]
@@ -119,7 +129,7 @@ services:
       # > JOB_TIMEOUT_MS do backend não é necessário (processamento é assíncrono), mas
       # cobre uploads grandes em rede lenta.
       PROXY_TIMEOUT: ${PROXY_TIMEOUT:-300s}
-      OIDC_JWKS_UPSTREAM: ${OIDC_JWKS_UPSTREAM:-${OIDC_ISSUER}/protocol/openid-connect/certs}
+      OIDC_JWKS_UPSTREAM: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/certs
       OIDC_TLS_VERIFY: "on"
       OIDC_CA_FILE: /etc/ssl/certs/ca-certificates.crt
     tmpfs:
@@ -134,13 +144,17 @@ services:
       oauth2-proxy: { condition: service_started }
 
   # Keycloak de TESTE (realm com usuários sintéticos alice/bob). Só com
-  # --profile keycloak-local. Nunca use em produção nem com usuários reais.
+  # --profile keycloak-local. Nunca use em produção nem com usuários reais:
+  # o realm de teste aceita login em HTTP (sslRequired: none) para funcionar na rede
+  # local sem certificado. O realm corporativo deve exigir HTTPS.
   keycloak:
     profiles: ["keycloak-local"]
     image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.0}
-    command: ["start-dev", "--import-realm", "--http-port=8180"]
+    command: ["start-dev", "--import-realm", "--http-host=0.0.0.0", "--http-port=8180"]
     environment:
-      KC_HOSTNAME: http://keycloak.localhost:8180
+      # Endereço público do Keycloak de teste (vai no "iss" dos tokens). Para acesso pela
+      # rede, use o IP desta máquina: http://<IP>:8180 (o script de rede faz isso).
+      KC_HOSTNAME: ${KC_LOCAL_HOSTNAME:-http://keycloak.localhost:8180}
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_LOCAL_ADMIN_PASSWORD:?defina KC_LOCAL_ADMIN_PASSWORD no .env}
       KC_CONVERSOR_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
@@ -149,11 +163,11 @@ services:
     volumes:
       - ./deploy/keycloak/realm-copacol-homolog.json:/opt/keycloak/data/import/realm-copacol-homolog.json:ro
     ports:
-      - "127.0.0.1:8180:8180"
+      - "${KC_LOCAL_BIND:-127.0.0.1}:8180:8180"
     networks:
       edge:
-        # Mesmo nome dentro e fora do Docker: o navegador resolve *.localhost para
-        # 127.0.0.1 e os containers resolvem este alias — o "issuer" bate nos dois lados.
+        # Os containers falam com o Keycloak por este nome (OIDC_INTERNAL_URL).
+        # Para uso só nesta máquina, o navegador também resolve keycloak.localhost.
         aliases: [keycloak.localhost]
     restart: unless-stopped
 
