@@ -1,0 +1,5 @@
+#!/bin/sh
+# Conversor falso que "trava": dispara um filho demorado (como o soffice faz com o
+# soffice.bin) e espera. O teste confere que o grupo inteiro morre no timeout.
+sleep 987 &
+wait

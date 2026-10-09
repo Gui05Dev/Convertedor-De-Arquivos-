@@ -42,3 +42,6 @@ uploads/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Dados dos trabalhos em desenvolvimento local (DATA_DIR padrão).
+data/

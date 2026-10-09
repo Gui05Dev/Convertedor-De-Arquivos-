@@ -1,14 +1,15 @@
-/* Teste de interface: abre a SPA num Chrome de verdade e usa a tela como um usuário —
- * clica no card, escolhe o arquivo, processa, confere o download.
+/* Teste de interface: abre a SPA num Chromium de verdade, faz login no Keycloak e usa
+ * a tela como um usuário — teclado, arquivo, etapa de processamento, download.
  *
- * Existe por dois motivos que nenhum outro teste cobre:
- *   1. `vite build` passar não prova que os componentes renderizam sem erro;
- *   2. é aqui que a regra "o frontend não fala com ninguém além da própria origem"
- *      vira verificação — o teste observa TODAS as requisições da página e falha se
- *      alguma sair para outro host.
+ * Cobre o que nenhum outro teste cobre:
+ *   1. os componentes renderizam e o fluxo inteiro funciona no navegador;
+ *   2. depois do login, NENHUMA requisição da página sai para outro host;
+ *   3. navegação por teclado e rótulos acessíveis;
+ *   4. layout em tela de celular (sem rolagem horizontal).
  *
- * Usa playwright-core + um Chrome/Edge já instalado (não baixa navegador).
- * Exige a stack de pé: `docker compose up` na raiz. Rodar com `npm run test:ui`.
+ * Exige a stack de pé (docker compose, perfil keycloak-local) e um Chrome/Chromium:
+ *   UI_PASSWORD=<senha da alice> [CHROME_PATH=/caminho/do/chrome] npm run test:ui
+ * Capturas de tela vão para test/screenshots/ (ignorado pelo git).
  */
 
 import fs from 'node:fs';
@@ -17,8 +18,11 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SITE = process.env.SITE || 'http://localhost:8080';
-const FIXTURE = path.join(HERE, 'fixtures', 'entrada.pdf');
+const SITE = (process.env.SITE || 'http://localhost:8080').replace(/\/$/, '');
+const USER = process.env.UI_USER || 'alice';
+const PASSWORD = process.env.UI_PASSWORD;
+const FIXTURES = path.join(HERE, '..', '..', 'backend', 'test', 'fixtures');
+const SHOTS = path.join(HERE, 'screenshots');
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail = '') => {
@@ -26,126 +30,157 @@ const check = (name, ok, detail = '') => {
   else { fail++; console.log(`  FAIL ${name} ${detail}`); }
 };
 
-/** Usa o Chrome ou o Edge já instalados; sem isso o playwright-core exige um download. */
 async function launch() {
-  for (const channel of ['chrome', 'msedge']) {
-    try { return await chromium.launch({ channel, headless: true }); }
-    catch { /* tenta o próximo */ }
+  if (process.env.CHROME_PATH) {
+    return chromium.launch({ executablePath: process.env.CHROME_PATH, headless: true, args: ['--no-sandbox'] });
   }
-  throw new Error('Nenhum Chrome ou Edge encontrado. Instale um dos dois para rodar este teste.');
+  for (const channel of ['chrome', 'msedge', 'chromium']) {
+    try { return await chromium.launch({ channel, headless: true }); } catch { /* próximo */ }
+  }
+  throw new Error('Nenhum Chrome/Edge encontrado. Defina CHROME_PATH.');
+}
+
+async function openTool(page, id) {
+  await page.click(`[data-tool="${id}"]`);
+  await page.waitForSelector('.modal-overlay.open', { timeout: 3000 });
+}
+
+async function closeModal(page) {
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('.modal-overlay', { state: 'detached', timeout: 3000 });
 }
 
 (async () => {
+  if (!PASSWORD) {
+    console.log('Defina UI_PASSWORD (senha do usuário de teste do realm de homologação).');
+    process.exit(2);
+  }
+  fs.mkdirSync(SHOTS, { recursive: true });
   const browser = await launch();
-  const context = await browser.newContext({ acceptDownloads: true });
+  const context = await browser.newContext({ acceptDownloads: true, locale: 'pt-BR' });
   const page = await context.newPage();
 
   const pageErrors = [];
   const consoleErrors = [];
   const externalRequests = [];
-  const fontRequests = [];
-
+  let loggedIn = false;
   page.on('pageerror', (e) => pageErrors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
   page.on('request', (r) => {
     const url = new URL(r.url());
-    if (url.protocol !== 'blob:' && url.protocol !== 'data:' && url.origin !== new URL(SITE).origin) {
+    if (loggedIn && !['blob:', 'data:'].includes(url.protocol) && url.origin !== new URL(SITE).origin) {
       externalRequests.push(r.url());
     }
-    if (r.url().includes('.woff2')) fontRequests.push(r.url());
   });
 
-  console.log('\n-- carregamento --');
-  await page.goto(SITE, { waitUntil: 'networkidle' });
-  check('React montou (#root preenchido)', (await page.locator('#root').innerHTML()).length > 100);
-  check('sem erro de JS', pageErrors.length === 0, pageErrors.join(' | '));
-  check('sem erro no console', consoleErrors.length === 0, consoleErrors.join(' | '));
-  check('nenhuma requisição a terceiros', externalRequests.length === 0, externalRequests.join(' | '));
+  console.log('\n-- login --');
+  await page.goto(SITE);
+  check('sem sessão vai para o Keycloak', !page.url().startsWith(SITE), page.url());
+  await page.fill('#username', USER);
+  await page.fill('#password', PASSWORD);
+  await page.click('#kc-login, [type=submit]');
+  await page.waitForURL(`${SITE}/**`, { timeout: 15000 });
+  loggedIn = true;
+  await page.waitForSelector('.tool-card', { timeout: 10000 });
+  await page.waitForTimeout(800); // animação de entrada dos cards
+  check('voltou logado para a aplicação', page.url().startsWith(SITE));
+  check('nome do usuário no topo', (await page.locator('.header-user').textContent()).length > 0);
+  check('link Sair presente', await page.locator('a.header-logout').count() === 1);
 
-  console.log('\n-- grade de ferramentas --');
-  check('10 cards renderizados', await page.locator('.tool-card').count() === 10);
-  check('ícones SVG renderizados', await page.locator('.card-icon-box svg').count() === 10);
-  check('badges de categoria', await page.locator('.card-badge').count() === 10);
+  console.log('\n-- ferramentas --');
+  const cards = await page.locator('.tool-card').evaluateAll((els) => els.map((e) => e.dataset.tool));
+  console.log(`  cards: ${cards.join(', ')}`);
+  for (const id of ['merge', 'split', 'compress', 'word-to-pdf', 'images-to-pdf', 'convert-image']) {
+    check(`card ${id} disponível`, cards.includes(id));
+  }
+  check('nenhum card "em breve" (PDF->Excel)', !cards.includes('pdf-excel'));
+  await page.screenshot({ path: path.join(SHOTS, 'inicio-desktop.png'), fullPage: true });
 
-  console.log('\n-- fontes auto-hospedadas --');
-  await page.evaluate(() => document.fonts.ready);
-  const families = await page.evaluate(() =>
-    Array.from(document.fonts).filter((f) => f.status === 'loaded').map((f) => f.family));
-  check('Nunito e Sora carregadas', families.includes('Nunito') && families.includes('Sora'), families.join(','));
-  check('woff2 vindos desta origem', fontRequests.length > 0 && fontRequests.every((u) => u.startsWith(SITE)));
-
-  console.log('\n-- tema --');
-  const before = await page.getAttribute('html', 'data-theme');
-  await page.click('.theme-toggle');
-  const after = await page.getAttribute('html', 'data-theme');
-  check('toggle troca o tema', before !== after, `${before} -> ${after}`);
-  await page.reload({ waitUntil: 'networkidle' });
-  check('tema persiste no reload', await page.getAttribute('html', 'data-theme') === after);
-  await page.click('.theme-toggle');
-
-  console.log('\n-- modal --');
-  await page.click('[data-tool="dividir"]');
-  await page.waitForSelector('.modal-overlay.open', { timeout: 3000 });
-  check('modal abre', (await page.locator('.modal-title').textContent()) === 'Dividir PDF');
-  check('opções da ferramenta aparecem', await page.locator('#optPageRange').count() === 1);
-  check('Processar começa desabilitado', await page.locator('.btn-process').isDisabled());
-  await page.keyboard.press('Escape');
-  await page.waitForSelector('.modal-overlay', { state: 'detached', timeout: 3000 });
-  check('Esc fecha o modal', true);
-
-  console.log('\n-- fluxo completo: dividir PDF --');
-  await page.click('[data-tool="dividir"]');
+  console.log('\n-- teclado e acessibilidade --');
+  await page.focus('[data-tool="word-to-pdf"]');
+  await page.keyboard.press('Enter');
   await page.waitForSelector('.modal-overlay.open');
-  await page.setInputFiles('.dropzone input[type=file]', FIXTURE);
-  check('arquivo listado', (await page.locator('.file-item-name').textContent()) === 'entrada.pdf');
+  check('Enter abre o card focado', (await page.locator('.modal-title').textContent()) === 'Word para PDF');
+  const focusedClose = await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Fechar', null, { timeout: 1500 })
+    .then(() => true, () => false);
+  check('foco vai para o botão Fechar', focusedClose);
+  check('diálogo rotulado pelo título', await page.locator('[role=dialog][aria-labelledby]').count() === 1);
+  check('seletor de arquivo tem rótulo', (await page.getAttribute('.dropzone input[type=file]', 'aria-label')) === 'Selecionar arquivo');
+  check('accept vem do servidor (DOCX)', (await page.getAttribute('.dropzone input[type=file]', 'accept')).includes('.docx'));
+  await page.keyboard.press('Tab');
+  const focusedInside = await page.evaluate(() => Boolean(document.activeElement?.closest('.modal-box')));
+  check('Tab fica dentro do modal', focusedInside);
+  check('Processar desabilitado sem arquivo', await page.locator('.btn-process').isDisabled());
 
-  // Campo obrigatório vazio tem que barrar ANTES de gastar um upload.
+  console.log('\n-- arquivo errado: mensagem compreensível --');
+  await page.setInputFiles('.dropzone input[type=file]', path.join(FIXTURES, 'transparente.png'));
+  const wrongType = await page.locator('.error-banner').textContent();
+  check('extensão errada avisada antes do envio', /não é um formato aceito/.test(wrongType), wrongType);
+  await page.setInputFiles('.dropzone input[type=file]', { name: 'falso.docx', mimeType: 'application/octet-stream', buffer: Buffer.from('isto não é um docx') });
   await page.click('.btn-process');
-  await page.waitForSelector('.error-banner.visible', { timeout: 3000 });
-  check('valida opção obrigatória antes de enviar',
-    (await page.locator('.error-banner span').textContent()).includes('intervalo'));
+  await page.waitForSelector('.error-banner', { timeout: 10000 });
+  const serverError = await page.locator('.error-banner').textContent();
+  check('servidor recusa conteúdo falso com mensagem clara', /não é um formato aceito/.test(serverError), serverError);
+  await page.click('.file-item-remove');
 
-  await page.fill('#optPageRange', '2-4');
-  const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
+  console.log('\n-- Word -> PDF: etapa real, sem % inventada --');
+  await page.setInputFiles('.dropzone input[type=file]', path.join(FIXTURES, 'relatorio.docx'));
+  check('arquivo listado', (await page.locator('.file-item-name').textContent()).includes('relatorio.docx'));
   await page.click('.btn-process');
-  const download = await downloadPromise;
-
-  check('nome do arquivo vem do backend', download.suggestedFilename() === 'copacol-pags-2-4.pdf',
+  await page.waitForSelector('.progress-wrap', { timeout: 5000 });
+  await page.waitForSelector('.progress-bar-indeterminate', { timeout: 10000 });
+  const stage = await page.locator('.progress-label span').first().textContent();
+  check('mostra etapa do processamento', /Na fila|LibreOffice|Iniciando/.test(stage), stage);
+  check('sem porcentagem durante o processamento', await page.locator('.progress-label span').count() === 1);
+  await page.screenshot({ path: path.join(SHOTS, 'processando.png') });
+  await page.waitForSelector('.success-state', { timeout: 60000 });
+  check('conclusão anunciada (role=status)', await page.locator('.success-state[role=status]').count() === 1);
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('.btn-download')]);
+  const file = await download.path();
+  check('download do PDF', download.suggestedFilename() === 'relatorio.pdf' && fs.readFileSync(file).subarray(0, 5).toString() === '%PDF-',
     download.suggestedFilename());
+  await page.screenshot({ path: path.join(SHOTS, 'concluido.png') });
+  await closeModal(page);
 
-  const saved = path.join(HERE, 'fixtures', '.saida.pdf');
-  await download.saveAs(saved);
-  check('resultado é um PDF', fs.readFileSync(saved).subarray(0, 5).toString() === '%PDF-');
-  fs.rmSync(saved, { force: true });
+  console.log('\n-- arquivos recentes --');
+  await page.waitForSelector('.recent-item', { timeout: 5000 });
+  check('trabalho aparece em "Seus arquivos recentes"', await page.locator('.recent-item.status-done').count() >= 1);
 
-  await page.waitForSelector('.success-state.visible', { timeout: 5000 });
-  check('mensagem do backend exibida (X-Result-Info)',
-    (await page.locator('.success-sub').textContent()).includes('3 página'));
-  check('botão "Baixar novamente" presente', await page.locator('.btn-download').count() === 1);
-
-  console.log('\n-- erro do backend na tela --');
-  await page.click('.btn-secondary'); // "Novo arquivo"
-  await page.setInputFiles('.dropzone input[type=file]', FIXTURE);
-  await page.fill('#optPageRange', '9-1');
+  console.log('\n-- juntar PDFs com reordenação por teclado --');
+  await openTool(page, 'merge');
+  await page.setInputFiles('.dropzone input[type=file]', [path.join(FIXTURES, 'texto.pdf'), path.join(FIXTURES, 'digitalizado.pdf')]);
+  await page.click('[aria-label="Mover digitalizado.pdf para cima"]');
+  const order = await page.locator('.file-item-name').allTextContents();
+  check('ordem alterada pelos botões', order[0].includes('digitalizado.pdf'), order.join(' | '));
   await page.click('.btn-process');
-  await page.waitForSelector('.error-banner.visible', { timeout: 15000 });
-  check('mensagem de erro do servidor aparece',
-    (await page.locator('.error-banner span').textContent()).includes('menor-maior'));
+  await page.waitForSelector('.success-state', { timeout: 30000 });
+  check('juntou', (await page.locator('.success-sub').allTextContents()).join(' ').includes('3 página'));
+  await closeModal(page);
 
-  console.log('\n-- ferramenta "em breve" --');
-  await page.keyboard.press('Escape');
-  await page.waitForSelector('.modal-overlay', { state: 'detached' });
-  await page.click('[data-tool="pdf-excel"]');
-  await page.waitForSelector('.modal-overlay.open');
-  check('avisa que está indisponível', (await page.locator('.modal-body').textContent()).includes('em breve'));
-  check('sem dropzone', await page.locator('.dropzone').count() === 0);
-  check('Processar desabilitado', await page.locator('.btn-process').isDisabled());
+  console.log('\n-- tela de celular --');
+  await page.setViewportSize({ width: 375, height: 740 });
+  await page.reload({ waitUntil: 'networkidle' });
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  check('sem rolagem horizontal em 375 px', overflow <= 0, `${overflow}px`);
+  await page.screenshot({ path: path.join(SHOTS, 'inicio-celular.png'), fullPage: true });
+  await openTool(page, 'convert-image');
+  await page.waitForTimeout(400); // fim da animação de abertura
+  await page.screenshot({ path: path.join(SHOTS, 'modal-celular.png') });
+  const box = await page.locator('.modal-box').boundingBox();
+  check('modal cabe na largura do celular', box.width <= 375, `${box.width}`);
+  await closeModal(page);
 
-  console.log('\n-- balanço final --');
-  check('nenhum erro de JS em toda a sessão', pageErrors.length === 0, pageErrors.join(' | '));
-  check('nenhuma requisição externa em toda a sessão', externalRequests.length === 0, externalRequests.join(' | '));
+  console.log('\n-- higiene --');
+  check('nenhuma requisição a terceiros após o login', externalRequests.length === 0, externalRequests.join(' | '));
+  check('sem erro de JS', pageErrors.length === 0, pageErrors.join(' | '));
+  // Em HTTP (teste pela rede sem certificado) o navegador avisa que ignora o COOP — esperado.
+  const relevant = consoleErrors.filter((e) => !/status of 4\d\d/.test(e) && !/Cross-Origin-Opener-Policy header has been ignored/.test(e));
+  check('sem erro no console (exceto respostas 4xx e aviso de HTTP)', relevant.length === 0, relevant.join(' | '));
 
   await browser.close();
   console.log(`\n=== ${pass} passaram, ${fail} falharam ===`);
   process.exit(fail ? 1 : 0);
-})().catch((err) => { console.error('ERRO:', err); process.exit(1); });
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

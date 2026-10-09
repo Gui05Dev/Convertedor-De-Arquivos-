@@ -1,38 +1,61 @@
-FROM node:20-bookworm-slim
+# Backend: API Node + motores de conversão (LibreOffice, Ghostscript, pdf2docx).
+#
+# Versões controladas: imagem base com tag exata, pacotes npm pelo package-lock
+# (npm ci), pacotes Python fixados em requirements-pdf2docx.txt. Os pacotes do Debian
+# acompanham a release estável (trixie) e recebem correções de segurança ao
+# reconstruir a imagem — ver "Atualização" no README.
+#
+# Para fixar também o digest (recomendado em homologação/produção), troque a tag por
+# node:24.21.0-trixie-slim@sha256:<digest> — `docker buildx imagetools inspect` mostra.
+ARG NODE_IMAGE=node:24.21.0-trixie-slim
 
-# LibreOffice headless (só Writer/Impress/Calc, não o metapacote completo) + fontes
-# metricamente compatíveis com Arial/Calibri/Times. Sem essas fontes, o texto de
-# DOCX/PPTX convertidos reflui diferente e o resultado sai visualmente errado
-# mesmo quando a conversão "funciona".
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-writer libreoffice-impress libreoffice-calc \
-    fonts-liberation fonts-dejavu-core fontconfig \
-    python3 python3-pip \
-    && rm -rf /var/lib/apt/lists/*
+FROM ${NODE_IMAGE}
 
-# pdf2docx: LibreOffice sozinho não converte PDF->DOCX (abre PDF como Draw, sem filtro de
-# exportação p/ Writer) — pdf2docx reconstrói texto/layout de verdade a partir do PDF.
-# --break-system-packages: Debian 12 bloqueia pip global por padrão (PEP 668); aceitável
-# aqui porque a imagem não roda mais nada em Python além deste script.
-RUN pip3 install --no-cache-dir --break-system-packages pdf2docx
+# - LibreOffice: só Writer e Impress (não o metapacote), sem Java.
+# - Fontes metricamente compatíveis com Arial/Times (Liberation) e Calibri/Cambria
+#   (Carlito/Caladea): sem elas o texto reflui e o PDF sai visualmente diferente.
+# - ghostscript: compressão de PDF. util-linux traz o prlimit.
+# - python3-venv: ambiente isolado do pdf2docx (sem pip global).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libreoffice-writer-nogui libreoffice-impress-nogui \
+      fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core fontconfig \
+      ghostscript util-linux \
+      python3 python3-venv \
+      tini \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/*
+
+# pdf2docx (MIT) depende do PyMuPDF (AGPL-3.0) e do OpenCV headless (Apache-2.0, que
+# embute FFmpeg LGPL). Ver LICENCAS.md antes de habilitar em produção.
+COPY requirements-pdf2docx.txt /tmp/requirements-pdf2docx.txt
+RUN python3 -m venv /opt/pdf2docx \
+ && /opt/pdf2docx/bin/pip install --no-cache-dir --no-compile -r /tmp/requirements-pdf2docx.txt \
+ && rm /tmp/requirements-pdf2docx.txt
 
 WORKDIR /app
-
-COPY package*.json ./
-RUN npm ci --omit=dev
-
+COPY package.json package-lock.json ./
+# sharp baixa o binário pré-compilado do libvips pelo próprio npm (pacote @img/sharp-linux-x64).
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY src ./src
 
-RUN groupadd -r appuser && useradd -r -g appuser -m appuser \
-    && chown -R appuser:appuser /app
-USER appuser
-ENV HOME=/home/appuser
+# Usuário sem privilégios, UID fixo (o volume de dados precisa pertencer a ele).
+RUN groupadd -r -g 10001 conversor && useradd -r -u 10001 -g conversor -d /nonexistent -s /usr/sbin/nologin conversor \
+ && mkdir -p /data && chown conversor:conversor /data && chmod 700 /data
+USER 10001:10001
 
-ENV NODE_ENV=production
-ENV PORT=3000
+ENV NODE_ENV=production \
+    PORT=3000 \
+    DATA_DIR=/data \
+    LIBREOFFICE_BIN=/usr/bin/soffice \
+    GHOSTSCRIPT_BIN=/usr/bin/gs \
+    PYTHON_BIN=/opt/pdf2docx/bin/python3 \
+    PRLIMIT_BIN=/usr/bin/prlimit
+
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "require('http').get('http://127.0.0.1:'+process.env.PORT+'/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))"
-
+# tini reaproveita processos órfãos (netos do LibreOffice) e repassa SIGTERM.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "src/index.js"]

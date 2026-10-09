@@ -1,32 +1,45 @@
 import { DocFoldIcon, CloseIcon } from './icons.jsx';
 import { formatBytes } from '../utils/format.js';
 
-export function FileList({ files, onRemove }) {
+/* Lista dos arquivos escolhidos. Em ferramentas onde a ordem importa (juntar PDFs,
+   imagens para PDF), cada item ganha botões "subir"/"descer" — reordenar por teclado,
+   sem depender de arrastar. */
+export function FileList({ files, onRemove, onMove, reorder, disabled }) {
   return (
-    <div className="files-list">
+    <ol className="files-list" aria-label="Arquivos selecionados">
       {files.map((file, index) => (
-        <div
-          /* Nome + tamanho + posição: dois arquivos homônimos ainda recebem chaves
-             distintas, e a animação de entrada não se repete ao remover um vizinho. */
-          key={`${file.name}-${file.size}-${index}`}
-          className="file-item"
-          style={{ animationDelay: `${index * 0.05}s` }}
-        >
-          <div className="file-item-icon"><DocFoldIcon /></div>
+        <li key={file.key} className="file-item">
+          <div className="file-item-icon" aria-hidden="true"><DocFoldIcon /></div>
           <div className="file-item-info">
-            <div className="file-item-name">{file.name}</div>
-            <div className="file-item-size">{formatBytes(file.size)}</div>
+            <div className="file-item-name">
+              {reorder && <span className="file-item-order">{index + 1}. </span>}
+              {file.file.name}
+            </div>
+            <div className="file-item-size">{formatBytes(file.file.size)}</div>
           </div>
+          {reorder && files.length > 1 && (
+            <div className="file-item-order-buttons">
+              <button
+                type="button" className="file-item-move" disabled={disabled || index === 0}
+                aria-label={`Mover ${file.file.name} para cima`} onClick={() => onMove(index, -1)}
+              >↑</button>
+              <button
+                type="button" className="file-item-move" disabled={disabled || index === files.length - 1}
+                aria-label={`Mover ${file.file.name} para baixo`} onClick={() => onMove(index, 1)}
+              >↓</button>
+            </div>
+          )}
           <button
             type="button"
             className="file-item-remove"
-            aria-label={`Remover ${file.name}`}
+            disabled={disabled}
+            aria-label={`Remover ${file.file.name}`}
             onClick={() => onRemove(index)}
           >
             <CloseIcon />
           </button>
-        </div>
+        </li>
       ))}
-    </div>
+    </ol>
   );
 }

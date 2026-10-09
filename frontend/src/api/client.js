@@ -1,99 +1,111 @@
 /* Único módulo do frontend que fala com a rede.
  *
- * Todos os caminhos são relativos de propósito: em produção o nginx que serve esta SPA
- * proxia /api pro backend, e em dev o proxy do Vite faz o mesmo (ver vite.config.js).
- * O navegador nunca conhece o endereço do backend — não há URL de API embutida no
- * bundle, não há CORS, e o mesmo build sobe em qualquer ambiente sem recompilar. */
+ * Caminhos sempre relativos (/api/...): o nginx que serve a SPA proxia /api pro
+ * backend, e em dev o proxy do Vite faz o mesmo. Não há URL de API no bundle.
+ *
+ * Autenticação: a sessão é um cookie HttpOnly do oauth2-proxy, enviado pelo navegador
+ * automaticamente. O frontend nunca vê nem guarda token. Se a sessão expirar, a API
+ * responde 401 e mandamos o usuário para o login do Keycloak, voltando para a página. */
 
-/** Limites de upload que a tela usa pra avisar o usuário antes de gastar um envio. */
-export async function fetchLimits() {
-  const response = await fetch('/api/config', { headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error('Não foi possível ler a configuração do servidor.');
-  return response.json();
+export class ApiError extends Error {
+  constructor(message, status, code) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
 }
 
-/**
- * Envia os arquivos e devolve o resultado pronto pra download.
- *
- * Usa XMLHttpRequest em vez de fetch porque é o único jeito com bom suporte em todo
- * navegador de acompanhar o progresso real do upload — `fetch` não expõe isso. O mapa
- * da barra é: 0-60% envio, 60% processamento no servidor (não há como medir), 60-95%
- * download da resposta.
- *
- * @param {object}          params
- * @param {string}          params.path          rota da API, ex. '/api/pdf/merge'
- * @param {FormData}        params.form          corpo multipart
- * @param {string}          params.fallbackName  nome usado se a resposta não trouxer um
- * @param {AbortSignal}     [params.signal]      cancela o envio (modal fechado)
- * @param {(p) => void}     [params.onProgress]  recebe { pct, label }
- * @returns {Promise<{ blob: Blob, name: string, info: string }>}
- */
-export function uploadToApi({ path, form, fallbackName, signal, onProgress }) {
-  return new Promise((resolve, reject) => {
-    const report = (pct, label) => onProgress?.({ pct, label });
+const SESSION_EXPIRED = 'Sua sessão expirou. Redirecionando para o login...';
 
+function goToLogin() {
+  const back = window.location.pathname + window.location.search;
+  window.location.assign(`/oauth2/start?rd=${encodeURIComponent(back)}`);
+}
+
+function messageForStatus(status) {
+  if (status === 413) return 'Arquivo excede o limite permitido pelo servidor.';
+  if (status === 429) return 'Você já tem arquivos sendo processados. Aguarde terminarem.';
+  if (status === 502 || status === 503) return 'Servidor ocupado ou indisponível no momento. Tente novamente em instantes.';
+  if (status === 504) return 'O servidor demorou demais para responder. Tente um arquivo menor.';
+  return 'Falha ao falar com o servidor. Tente novamente.';
+}
+
+async function parseError(response) {
+  let body = null;
+  try { body = await response.json(); } catch { /* corpo não-JSON (proxy) */ }
+  return new ApiError(body?.error || messageForStatus(response.status), response.status, body?.code);
+}
+
+async function request(path, { method = 'GET' } = {}) {
+  let response;
+  try {
+    response = await fetch(path, { method, headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+  } catch {
+    throw new ApiError('Não foi possível conectar ao servidor. Verifique sua conexão.', 0, 'network');
+  }
+  if (response.status === 401) {
+    goToLogin();
+    throw new ApiError(SESSION_EXPIRED, 401, 'unauthenticated');
+  }
+  if (!response.ok) throw await parseError(response);
+  return response.status === 204 ? null : response.json();
+}
+
+export const fetchMe = () => request('/api/me');
+export const fetchConfig = () => request('/api/config');
+export const fetchTools = () => request('/api/tools').then((r) => r.tools);
+export const fetchJob = (id) => request(`/api/jobs/${encodeURIComponent(id)}`);
+export const listJobs = () => request('/api/jobs').then((r) => r.jobs);
+export const deleteJob = (id) => request(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export const downloadUrl = (id) => `/api/jobs/${encodeURIComponent(id)}/download`;
+
+/**
+ * Envia os arquivos e cria o trabalho. Usa XMLHttpRequest porque é o único jeito,
+ * com bom suporte, de acompanhar o progresso REAL do envio (bytes enviados).
+ * Depois do envio, o processamento é acompanhado por pollJob — sem porcentagem.
+ */
+export function createJob({ form, signal, onUploadProgress }) {
+  return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', path);
-    xhr.responseType = 'blob';
+    xhr.open('POST', '/api/jobs');
+    xhr.responseType = 'json';
+    xhr.setRequestHeader('Accept', 'application/json');
 
     xhr.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      report(Math.max(1, Math.round((e.loaded / e.total) * 60)), 'Enviando arquivo...');
+      if (e.lengthComputable) onUploadProgress?.({ loaded: e.loaded, total: e.total });
     };
-    xhr.upload.onload = () => report(60, 'Processando no servidor...');
-    xhr.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      report(60 + Math.round((e.loaded / e.total) * 35), 'Baixando resultado...');
-    };
-
-    xhr.onerror = () => reject(new Error('Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente.'));
+    xhr.onerror = () => reject(new ApiError('Não foi possível conectar ao servidor. Verifique sua conexão.', 0, 'network'));
     xhr.onabort = () => reject(Object.assign(new Error('Cancelado.'), { name: 'AbortError' }));
-
-    xhr.onload = async () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        report(95, 'Finalizando...');
-        resolve({
-          blob: xhr.response,
-          name: filenameFromResponse(xhr, fallbackName),
-          info: decodeHeader(xhr.getResponseHeader('X-Result-Info')),
-        });
-        return;
+    xhr.onload = () => {
+      if (xhr.status === 202) return resolve(xhr.response);
+      if (xhr.status === 401) {
+        goToLogin();
+        return reject(new ApiError(SESSION_EXPIRED, 401, 'unauthenticated'));
       }
-      reject(new Error(await errorMessageFrom(xhr)));
+      const body = xhr.response;
+      reject(new ApiError(body?.error || messageForStatus(xhr.status), xhr.status, body?.code));
     };
 
     if (signal) {
-      if (signal.aborted) { xhr.abort(); return; }
+      if (signal.aborted) return xhr.abort();
       signal.addEventListener('abort', () => xhr.abort(), { once: true });
     }
-
-    report(1, 'Enviando arquivo...');
     xhr.send(form);
   });
 }
 
-/* Quem nomeia o arquivo é o backend (Content-Disposition); o nome local é rede de segurança. */
-function filenameFromResponse(xhr, fallbackName) {
-  const disposition = xhr.getResponseHeader('Content-Disposition') || '';
-  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
-  if (!match) return fallbackName;
-  try { return decodeURIComponent(match[1]); } catch { return match[1]; }
-}
-
-function decodeHeader(value) {
-  if (!value) return '';
-  try { return decodeURIComponent(value); } catch { return value; }
-}
-
-/* Traduz uma resposta de erro em mensagem pro usuário. Os status tratados à parte são
-   os que podem vir sem corpo JSON (limite do proxy, timeout de gateway). */
-async function errorMessageFrom(xhr) {
-  if (xhr.status === 413) return 'Arquivo excede o limite permitido pelo servidor.';
-  if (xhr.status === 503) return 'Servidor ocupado processando outras requisições. Tente novamente em instantes.';
-  if (xhr.status === 504) return 'O processamento demorou demais e foi cancelado. Tente um arquivo menor.';
-  try {
-    const body = JSON.parse(await xhr.response.text());
-    if (body?.error) return body.error;
-  } catch { /* resposta sem JSON */ }
-  return 'Falha ao processar o arquivo. Tente novamente.';
+/**
+ * Consulta o trabalho até terminar. Intervalo curto no início (conversões rápidas
+ * terminam em menos de um segundo) e mais espaçado depois, pra não martelar a API.
+ */
+export async function pollJob(id, { signal, onUpdate }) {
+  let delay = 400;
+  for (;;) {
+    if (signal?.aborted) throw Object.assign(new Error('Cancelado.'), { name: 'AbortError' });
+    const job = await fetchJob(id);
+    onUpdate?.(job);
+    if (job.status === 'done' || job.status === 'failed') return job;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(delay * 1.5, 2000);
+  }
 }

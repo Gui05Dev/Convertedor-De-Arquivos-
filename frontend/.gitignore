@@ -13,3 +13,6 @@ dist/
 
 .claude/settings.local.json
 npm-debug.log*
+
+# Capturas de tela do teste de interface
+test/screenshots/

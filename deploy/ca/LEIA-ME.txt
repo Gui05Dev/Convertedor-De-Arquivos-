@@ -1,0 +1,2 @@
+# Coloque aqui a cadeia da AC interna (ac-copacol.pem), se o Keycloak usar uma.
+# Arquivos .pem não vão para o git.

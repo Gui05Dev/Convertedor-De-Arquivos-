@@ -1,40 +1,37 @@
 # ── Etapa 1: build da SPA ──
-# O Node só existe aqui. A imagem final não leva Node, nem node_modules, nem código-fonte:
-# só os arquivos estáticos que o Vite gerou.
-FROM node:20-alpine AS build
+# O Node só existe aqui. A imagem final leva apenas os arquivos estáticos.
+ARG NODE_IMAGE=node:24.21.0-trixie-slim
+ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.30.5-alpine
 
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
-
-COPY package*.json ./
-RUN npm ci
-
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY index.html vite.config.js ./
 COPY src ./src
 COPY public ./public
 RUN npm run build
 
 # ── Etapa 2: servir ──
-FROM nginx:1.27-alpine
+# nginx-unprivileged: mesma base oficial do nginx, mas roda como usuário sem
+# privilégios (UID 101) e escuta numa porta alta (8080).
+FROM ${NGINX_IMAGE}
 
-# O entrypoint oficial do nginx roda envsubst nos templates em /etc/nginx/templates
-# e escreve o resultado em /etc/nginx/conf.d — é assim que BACKEND_ORIGIN e os limites
-# entram na config sem precisar reconstruir a imagem por ambiente.
-COPY nginx.conf.template /etc/nginx/templates/default.conf.template
-
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Faz o entrypoint preencher NGINX_LOCAL_RESOLVERS com o DNS de /etc/resolv.conf
-# (o DNS interno do Docker). Sem isso o entrypoint pula esse passo e a diretiva
-# `resolver` do nginx.conf.template fica sem valor, derrubando o nginx no boot.
-ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
+# O entrypoint oficial preenche NGINX_LOCAL_RESOLVERS com o DNS do Docker.
+ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1 \
+    NGINX_PORT=8080 \
+    BACKEND_ORIGIN=http://backend:3000 \
+    OAUTH2_PROXY_UPSTREAM=http://oauth2-proxy:4180 \
+    MAX_UPLOAD_SIZE=210m \
+    PROXY_TIMEOUT=180s \
+    OIDC_JWKS_UPSTREAM=http://keycloak:8080/realms/copacol/protocol/openid-connect/certs \
+    OIDC_TLS_VERIFY=on \
+    OIDC_CA_FILE=/etc/ssl/certs/ca-certificates.crt
 
-# Defaults do docker-compose; sobrescreva no ambiente se o backend estiver noutro host.
-ENV NGINX_PORT=80
-ENV BACKEND_ORIGIN=http://backend:3000
-ENV MAX_UPLOAD_SIZE=100m
-ENV PROXY_TIMEOUT=120s
-
-EXPOSE 80
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget -q -O /dev/null "http://127.0.0.1:${NGINX_PORT}/" || exit 1
+EXPOSE 8080 8081
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -q -O /dev/null "http://127.0.0.1:${NGINX_PORT}/healthz" || exit 1

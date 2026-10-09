@@ -1,42 +1,184 @@
-# Dois serviços independentes. O navegador só alcança o `frontend`; o `backend` não
-# publica porta nenhuma no host — só o frontend fala com ele, pela rede interna do
-# Compose. É isso que garante que nenhuma configuração ou credencial do backend
-# precise (ou possa) trafegar até o navegador.
+# Conversor de Arquivos Copacol — HOMOLOGAÇÃO
+#
+#   proxy HTTPS corporativo ──► frontend (nginx :8080) ──► backend (:3000, rede sem saída)
+#                                    │
+#                                    └──► oauth2-proxy (:4180) ──► Keycloak (OIDC)
+#
+# Redes:
+#   edge     — nginx e oauth2-proxy. Tem saída (oauth2-proxy precisa falar com o Keycloak).
+#   interno  — nginx e backend. `internal: true`: o backend NÃO tem rota para fora, nem
+#              para a internet nem para outros sistemas da cooperativa. As chaves públicas
+#              do Keycloak chegam a ele pelo repasse do nginx (porta 8081, só /jwks).
+#
+# Configuração: copie .env.example para .env (raiz) e backend/.env.example para
+# backend/.env. Nenhum segredo fica neste arquivo.
+#
+# Uso:
+#   docker compose up -d --build                         # Keycloak corporativo
+#   docker compose --profile keycloak-local up -d --build  # Keycloak de teste embutido
+
+name: conversor-copacol
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
 
 services:
   backend:
-    build: ./backend
-    # Toda a configuração e as credenciais vêm daqui. Copie backend/.env.example
-    # para backend/.env antes do primeiro `docker compose up`.
-    env_file:
-      - ./backend/.env
-    # `expose` em vez de `ports`: visível só para os outros serviços do compose.
-    expose:
-      - "3000"
-    restart: unless-stopped
+    <<: *hardening
+    build:
+      context: ./backend
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24.21.0-trixie-slim}
+    image: conversor-copacol/backend:${APP_VERSION:-3.0.0}
+    env_file: [./backend/.env]
+    environment:
+      AUTH_MODE: oidc
+      OIDC_ISSUER: ${OIDC_ISSUER:?defina OIDC_ISSUER no .env}
+      OIDC_AUDIENCE: ${OIDC_CLIENT_ID:?defina OIDC_CLIENT_ID no .env}
+      OIDC_JWKS_URL: http://frontend:8081/jwks
+      OIDC_REQUIRED_ROLE: ${OIDC_REQUIRED_ROLE:-}
+      DATA_DIR: /data
+    volumes:
+      - dados:/data
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    networks: [interno]
+    expose: ["3000"]
+    ulimits:
+      nofile: { soft: 4096, hard: 4096 }
+    stop_grace_period: 30s
     deploy:
       resources:
         limits:
-          # Cada conversão sobe um LibreOffice/pdf2docx; ver MAX_CONCURRENT_CONVERSIONS.
-          cpus: '2'
-          memory: 2G
+          # Cada trabalho pode subir um LibreOffice; ver MAX_CONCURRENT_JOBS.
+          cpus: "${BACKEND_CPUS:-2}"
+          memory: ${BACKEND_MEMORY:-3g}
+          pids: 512
+
+  oauth2-proxy:
+    <<: *hardening
+    image: ${OAUTH2_PROXY_IMAGE:-quay.io/oauth2-proxy/oauth2-proxy:v7.15.5-alpine}
+    environment:
+      OAUTH2_PROXY_PROVIDER: keycloak-oidc
+      OAUTH2_PROXY_OIDC_ISSUER_URL: ${OIDC_ISSUER}
+      # Endereços explícitos em vez de descoberta automática: o navegador usa o endereço
+      # público do Keycloak (OIDC_ISSUER) e os containers usam OIDC_INTERNAL_URL, que pode
+      # ser outro (ex.: Keycloak de teste acessado pela rede). O "iss" dos tokens continua
+      # sendo conferido contra OIDC_ISSUER.
+      OAUTH2_PROXY_SKIP_OIDC_DISCOVERY: "true"
+      OAUTH2_PROXY_LOGIN_URL: ${OIDC_ISSUER}/protocol/openid-connect/auth
+      OAUTH2_PROXY_REDEEM_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/token
+      OAUTH2_PROXY_OIDC_JWKS_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/certs
+      OAUTH2_PROXY_PROFILE_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/userinfo
+      OAUTH2_PROXY_VALIDATE_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/userinfo
+      OAUTH2_PROXY_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?defina OIDC_CLIENT_SECRET no .env}
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      OAUTH2_PROXY_REDIRECT_URL: ${PUBLIC_URL:?defina PUBLIC_URL no .env}/oauth2/callback
+      OAUTH2_PROXY_ALLOWED_ROLES: ${OIDC_REQUIRED_ROLE:-}
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_COOKIE_SECRET:?defina OAUTH2_COOKIE_SECRET no .env}
+      OAUTH2_PROXY_COOKIE_NAME: ${OAUTH2_COOKIE_NAME:-__Host-conversor}
+      OAUTH2_PROXY_COOKIE_SECURE: ${OAUTH2_COOKIE_SECURE:-true}
+      OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      OAUTH2_PROXY_COOKIE_EXPIRE: ${OAUTH2_COOKIE_EXPIRE:-8h}
+      # Renova o access token (5 min no Keycloak) antes de expirar.
+      OAUTH2_PROXY_COOKIE_REFRESH: ${OAUTH2_COOKIE_REFRESH:-4m}
+      OAUTH2_PROXY_UPSTREAMS: static://202
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      # Só o nginx (rede edge) pode informar X-Forwarded-*.
+      OAUTH2_PROXY_TRUSTED_PROXY_IPS: ${EDGE_SUBNET:-172.30.10.0/24}
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_PASS_ACCESS_TOKEN: "true"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_BACKEND_LOGOUT_URL: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/logout?id_token_hint={id_token}
+      OAUTH2_PROXY_SHOW_DEBUG_ON_ERROR: "false"
+      # Keycloak com certificado de AC interna: ver docker-compose.ca.yml.
+    networks: [edge]
+    expose: ["4180"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4180/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   frontend:
-    build: ./frontend
+    <<: *hardening
+    build:
+      context: ./frontend
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24.21.0-trixie-slim}
+        NGINX_IMAGE: ${NGINX_IMAGE:-nginxinc/nginx-unprivileged:1.30.5-alpine}
+    image: conversor-copacol/frontend:${APP_VERSION:-3.0.0}
     ports:
-      - "8080:80"
+      # Publicado só no loopback por padrão: o proxy HTTPS corporativo encaminha pra cá.
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
     environment:
-      # Porta que o nginx escuta DENTRO do container. Tem que ser a mesma do lado
-      # direito do mapeamento em `ports` acima — mudar uma sem a outra derruba o acesso.
-      NGINX_PORT: 80
-      # Nome do serviço na rede do compose — o valor nunca chega ao navegador,
-      # é usado só pelo nginx no proxy de /api.
+      NGINX_PORT: 8080
       BACKEND_ORIGIN: http://backend:3000
-      # Precisa ser >= MAX_FILE_SIZE_MB do backend, senão o nginx corta antes.
-      MAX_UPLOAD_SIZE: 100m
-      # Precisa ser > CONVERT_TIMEOUT_MS do backend, senão o proxy desiste primeiro.
-      PROXY_TIMEOUT: 120s
+      OAUTH2_PROXY_UPSTREAM: http://oauth2-proxy:4180
+      # Corpo inteiro do envio; >= MAX_TOTAL_UPLOAD_MB do backend.
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-210m}
+      # > JOB_TIMEOUT_MS do backend não é necessário (processamento é assíncrono), mas
+      # cobre uploads grandes em rede lenta.
+      PROXY_TIMEOUT: ${PROXY_TIMEOUT:-300s}
+      OIDC_JWKS_UPSTREAM: ${OIDC_INTERNAL_URL:-${OIDC_ISSUER}}/protocol/openid-connect/certs
+      OIDC_TLS_VERIFY: "on"
+      OIDC_CA_FILE: /etc/ssl/certs/ca-certificates.crt
+    tmpfs:
+      - /tmp:size=64m
+      - /var/cache/nginx:size=16m
+      - /etc/nginx/conf.d:size=1m,uid=101,gid=101
+    networks:
+      edge: {}
+      interno: {}
     depends_on:
-      backend:
-        condition: service_healthy
+      backend: { condition: service_healthy }
+      oauth2-proxy: { condition: service_started }
+
+  # Keycloak de TESTE (realm com usuários sintéticos alice/bob). Só com
+  # --profile keycloak-local. Nunca use em produção nem com usuários reais:
+  # o realm de teste aceita login em HTTP (sslRequired: none) para funcionar na rede
+  # local sem certificado. O realm corporativo deve exigir HTTPS.
+  keycloak:
+    profiles: ["keycloak-local"]
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.0}
+    command: ["start-dev", "--import-realm", "--http-host=0.0.0.0", "--http-port=8180"]
+    environment:
+      # Endereço público do Keycloak de teste (vai no "iss" dos tokens). Para acesso pela
+      # rede, use o IP desta máquina: http://<IP>:8180 (o script de rede faz isso).
+      KC_HOSTNAME: ${KC_LOCAL_HOSTNAME:-http://keycloak.localhost:8180}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_LOCAL_ADMIN_PASSWORD:?defina KC_LOCAL_ADMIN_PASSWORD no .env}
+      KC_CONVERSOR_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      KC_CONVERSOR_PUBLIC_URL: ${PUBLIC_URL}
+      KC_TEST_PASSWORD: ${KC_LOCAL_TEST_PASSWORD:?defina KC_LOCAL_TEST_PASSWORD no .env}
+    volumes:
+      - ./deploy/keycloak/realm-copacol-homolog.json:/opt/keycloak/data/import/realm-copacol-homolog.json:ro
+    ports:
+      - "${KC_LOCAL_BIND:-127.0.0.1}:8180:8180"
+    networks:
+      edge:
+        # Os containers falam com o Keycloak por este nome (OIDC_INTERNAL_URL).
+        # Para uso só nesta máquina, o navegador também resolve keycloak.localhost.
+        aliases: [keycloak.localhost]
     restart: unless-stopped
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: ${EDGE_SUBNET:-172.30.10.0/24}
+  interno:
+    internal: true
+
+volumes:
+  dados:
+    name: conversor-copacol-dados
