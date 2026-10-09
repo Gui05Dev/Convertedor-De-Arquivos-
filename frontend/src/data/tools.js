@@ -1,20 +1,17 @@
 import {
   MergeIcon, SplitIcon, RotateIcon, RemovePagesIcon, BoltIcon,
-  DocIcon, DocLinesIcon, DocFoldIcon, SheetIcon, TableIcon,
-  ImageIcon, SlideIcon, SlideStandIcon,
+  DocIcon, DocLinesIcon, DocFoldIcon, ImageIcon, SlideIcon, SlideStandIcon,
   CheckIcon, BoltBadgeIcon, ConvertBadgeIcon,
 } from '../components/icons.jsx';
 
-/* Catálogo das ferramentas: fonte única da verdade dos cards, do modal e da chamada de
- * API de cada uma. Acrescentar uma ferramenta é acrescentar uma entrada aqui.
+/* Textos e aparência de cada ferramenta. O que REALMENTE está disponível vem do
+ * backend (GET /api/tools): uma ferramenta daqui só aparece na tela se o servidor a
+ * listar — se o motor não estiver instalado, o card não aparece.
  *
  * Campos:
- *   accept/multiple/minFiles  o que o seletor de arquivos aceita
- *   options                   qual formulário extra o modal mostra (null = nenhum)
- *   endpoint                  rota da API; null marca a ferramenta como "em breve"
- *   fileField                 'file' (um) ou 'files' (vários), conforme a rota espera
- *   extraFields               valores do formulário que viram campos do multipart
- *   requiredOption            campo que precisa estar preenchido antes de enviar
+ *   id        id da ferramenta no backend (campo `tool` do envio)
+ *   options   formulário extra no modal (ver ToolOptions)
+ *   required  opção que precisa estar preenchida antes de enviar
  */
 
 export const CATEGORIES = {
@@ -23,117 +20,109 @@ export const CATEGORIES = {
   converter: { label: 'Converter', Icon: ConvertBadgeIcon },
 };
 
-export const TOOLS = {
-  juntar: {
-    title: 'Juntar PDF',
-    desc: 'Mescle múltiplos PDFs em qualquer ordem.',
-    subtitle: 'Combine múltiplos PDFs em um único documento.',
-    cat: 'organizar', iconColor: 'ic-green', Icon: MergeIcon,
-    accept: '.pdf', multiple: true, minFiles: 2, options: null,
-    endpoint: '/api/pdf/merge', fileField: 'files', outputName: 'copacol-unido.pdf',
-  },
-
-  dividir: {
-    title: 'Dividir PDF',
-    desc: 'Selecione páginas ou intervalos para separar.',
-    subtitle: 'Extraia um intervalo de páginas do seu PDF.',
-    cat: 'organizar', iconColor: 'ic-red', Icon: SplitIcon,
-    accept: '.pdf', multiple: false, minFiles: 1, options: 'dividir',
-    endpoint: '/api/pdf/split', fileField: 'file', outputName: 'copacol-paginas.pdf',
-    extraFields: (opts) => ({ range: opts.range }),
-    requiredOption: { field: 'range', message: 'Informe o intervalo de páginas antes de processar.' },
-  },
-
-  girar: {
-    title: 'Girar PDF',
-    desc: 'Rotacione páginas individualmente ou o documento todo.',
-    subtitle: 'Rotacione todas as páginas em 90°.',
-    cat: 'organizar', iconColor: 'ic-orange', Icon: RotateIcon,
-    accept: '.pdf', multiple: false, minFiles: 1, options: 'girar',
-    endpoint: '/api/pdf/rotate', fileField: 'file', outputName: 'copacol-girado.pdf',
-    extraFields: (opts) => ({ angle: opts.angle || '90' }),
-  },
-
-  'remover-paginas': {
-    title: 'Remover Páginas',
-    desc: 'Exclua páginas específicas de qualquer PDF.',
-    subtitle: 'Informe os números das páginas a remover.',
-    cat: 'organizar', iconColor: 'ic-green', Icon: RemovePagesIcon,
-    accept: '.pdf', multiple: false, minFiles: 1, options: 'remover-paginas',
-    endpoint: '/api/pdf/remove-pages', fileField: 'file', outputName: 'copacol-paginas-removidas.pdf',
-    extraFields: (opts) => ({ pages: opts.pages }),
-    requiredOption: { field: 'pages', message: 'Informe as páginas a remover antes de processar.' },
-  },
-
-  comprimir: {
-    title: 'Comprimir PDF',
-    desc: 'Remove metadados para reduzir levemente o tamanho.',
-    subtitle: 'Reduz o tamanho removendo metadados e otimizando os objetos.',
-    cat: 'otimizar', iconColor: 'ic-teal', Icon: BoltIcon,
-    accept: '.pdf', multiple: false, minFiles: 1, options: null,
-    endpoint: '/api/pdf/compress', fileField: 'file', outputName: 'copacol-comprimido.pdf',
-  },
-
-  'pdf-word': {
-    title: 'PDF para Word',
-    desc: 'Converta PDFs para DOCX editáveis.',
-    subtitle: 'Converte seu PDF em um documento Word (DOCX) editável.',
-    cat: 'converter', iconColor: 'ic-blue', Icon: DocIcon, CardIcon: DocLinesIcon,
-    accept: '.pdf', multiple: false, minFiles: 1, options: null,
-    endpoint: '/api/convert', fileField: 'file', outputName: 'copacol-convertido.docx',
-    extraFields: () => ({ target: 'docx' }),
-  },
-
-  'pdf-excel': {
-    title: 'PDF para Excel',
-    desc: 'Extraia tabelas de PDFs para planilhas XLSX.',
-    subtitle: 'Em breve.',
-    cat: 'converter', iconColor: 'ic-teal', Icon: SheetIcon, CardIcon: TableIcon,
-    accept: '.pdf', multiple: false, minFiles: 1, options: null,
-    // Sem endpoint: o backend não expõe pdf->xlsx porque não há conversor open-source
-    // confiável pra essa direção (ver ALLOWED_CONVERSIONS em backend/src/routes/convert.js).
-    endpoint: null,
-  },
-
-  'jpg-pdf': {
-    title: 'JPG para PDF',
-    desc: 'Converta imagens JPG/PNG para PDF.',
-    subtitle: 'Combine imagens JPG/PNG em um único PDF.',
-    cat: 'converter', iconColor: 'ic-amber', Icon: ImageIcon,
-    accept: 'image/jpeg,image/png,.jpg,.jpeg,.png', multiple: true, minFiles: 1, options: null,
-    endpoint: '/api/pdf/images-to-pdf', fileField: 'files', outputName: 'copacol-imagens.pdf',
-  },
-
-  'word-pdf': {
-    title: 'Word para PDF',
-    desc: 'Converta DOCX para PDF com qualidade profissional.',
-    subtitle: 'Converte seu documento Word (DOCX) em um PDF.',
-    cat: 'converter', iconColor: 'ic-blue', Icon: DocIcon, CardIcon: DocFoldIcon,
-    accept: '.docx', multiple: false, minFiles: 1, options: null,
-    endpoint: '/api/convert', fileField: 'file', outputName: 'copacol-convertido.pdf',
-    extraFields: () => ({ target: 'pdf' }),
-  },
-
-  'pptx-pdf': {
-    title: 'PowerPoint para PDF',
-    desc: 'Transforme PPT/PPTX para PDF com layout preservado.',
-    subtitle: 'Converte sua apresentação PowerPoint (PPTX) em um PDF.',
-    cat: 'converter', iconColor: 'ic-purple', Icon: SlideIcon, CardIcon: SlideStandIcon,
-    accept: '.pptx', multiple: false, minFiles: 1, options: null,
-    endpoint: '/api/convert', fileField: 'file', outputName: 'copacol-convertido.pdf',
-    extraFields: () => ({ target: 'pdf' }),
-  },
+/* Tipo real (detectado pelo backend) -> extensões/MIME pro seletor de arquivos. */
+export const TYPE_ACCEPT = {
+  pdf: ['.pdf', 'application/pdf'],
+  jpeg: ['.jpg', '.jpeg', 'image/jpeg'],
+  png: ['.png', 'image/png'],
+  webp: ['.webp', 'image/webp'],
+  docx: ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  pptx: ['.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
 };
 
-/** Monta o corpo multipart que a rota da ferramenta espera. */
+export const TYPE_LABEL = { pdf: 'PDF', jpeg: 'JPG', png: 'PNG', webp: 'WebP', docx: 'DOCX', pptx: 'PPTX' };
+
+export const TOOLS = [
+  {
+    id: 'merge', title: 'Juntar PDF',
+    desc: 'Mescle vários PDFs na ordem que você escolher.',
+    subtitle: 'Combine vários PDFs em um único documento. Use as setas para definir a ordem.',
+    cat: 'organizar', iconColor: 'ic-green', Icon: MergeIcon, options: null, reorder: true,
+  },
+  {
+    id: 'split', title: 'Dividir PDF',
+    desc: 'Extraia páginas ou separe uma por arquivo.',
+    subtitle: 'Extraia um intervalo de páginas ou gere um PDF por página.',
+    cat: 'organizar', iconColor: 'ic-red', Icon: SplitIcon, options: 'split',
+    required: (o) => ((o.mode || 'range') === 'range' && !o.range?.trim()
+      ? 'Informe o intervalo de páginas antes de processar.' : null),
+  },
+  {
+    id: 'rotate', title: 'Girar PDF',
+    desc: 'Gire todas as páginas do documento.',
+    subtitle: 'Gire todas as páginas em 90°, 180° ou 270°.',
+    cat: 'organizar', iconColor: 'ic-orange', Icon: RotateIcon, options: 'rotate',
+  },
+  {
+    id: 'remove-pages', title: 'Remover páginas',
+    desc: 'Exclua páginas específicas de um PDF.',
+    subtitle: 'Informe os números das páginas a remover.',
+    cat: 'organizar', iconColor: 'ic-green', Icon: RemovePagesIcon, options: 'remove-pages',
+    required: (o) => (!o.pages?.trim() ? 'Informe as páginas a remover antes de processar.' : null),
+  },
+  {
+    id: 'compress', title: 'Comprimir PDF',
+    desc: 'Reduza o tamanho recomprimindo imagens e fontes.',
+    subtitle: 'Recomprime imagens e fontes. O ganho depende do conteúdo do PDF.',
+    cat: 'otimizar', iconColor: 'ic-teal', Icon: BoltIcon, options: 'compress',
+  },
+  {
+    id: 'word-to-pdf', title: 'Word para PDF',
+    desc: 'Converta documentos DOCX em PDF.',
+    subtitle: 'Converte um documento Word (DOCX) em PDF.',
+    cat: 'converter', iconColor: 'ic-blue', Icon: DocIcon, CardIcon: DocFoldIcon, options: null,
+  },
+  {
+    id: 'pptx-to-pdf', title: 'PowerPoint para PDF',
+    desc: 'Converta apresentações PPTX em PDF.',
+    subtitle: 'Converte uma apresentação PowerPoint (PPTX) em PDF.',
+    cat: 'converter', iconColor: 'ic-purple', Icon: SlideIcon, CardIcon: SlideStandIcon, options: null,
+  },
+  {
+    id: 'images-to-pdf', title: 'Imagens para PDF',
+    desc: 'Junte fotos JPG, PNG ou WebP em um PDF.',
+    subtitle: 'Uma página por imagem, na ordem da lista.',
+    cat: 'converter', iconColor: 'ic-amber', Icon: ImageIcon, options: null, reorder: true,
+  },
+  {
+    id: 'convert-image', title: 'Converter imagem',
+    desc: 'Converta entre JPG, PNG e WebP.',
+    subtitle: 'Escolha o formato de destino. Várias imagens saem num arquivo ZIP.',
+    cat: 'converter', iconColor: 'ic-amber', Icon: ImageIcon, options: 'convert-image',
+    required: (o) => (!o.target ? 'Escolha o formato de destino.' : null),
+  },
+  {
+    id: 'pdf-to-docx', title: 'PDF para Word',
+    desc: 'Converta PDF com texto em DOCX editável.',
+    subtitle: 'Funciona com PDF de texto selecionável. PDF digitalizado (imagem) não é convertido.',
+    cat: 'converter', iconColor: 'ic-blue', Icon: DocIcon, CardIcon: DocLinesIcon, options: null,
+  },
+];
+
+/** Junta o catálogo visual com o que o servidor informou estar disponível. */
+export function availableTools(serverTools) {
+  const byId = new Map(serverTools.map((t) => [t.id, t]));
+  return TOOLS.filter((tool) => byId.has(tool.id)).map((tool) => {
+    const server = byId.get(tool.id);
+    const accept = server.accepts.flatMap((type) => TYPE_ACCEPT[type] || []);
+    return {
+      ...tool,
+      ...server,
+      acceptAttr: accept.join(','),
+      acceptExtensions: accept.filter((a) => a.startsWith('.')),
+      acceptLabel: server.accepts.map((type) => TYPE_LABEL[type]).filter(Boolean).join(', '),
+      multiple: server.maxFiles > 1,
+    };
+  });
+}
+
+/** Monta o multipart que o backend espera em POST /api/jobs. */
 export function buildForm(tool, files, options) {
   const form = new FormData();
-
-  const chosen = tool.fileField === 'files' ? files : files.slice(0, 1);
-  for (const file of chosen) form.append(tool.fileField, file, file.name);
-
-  for (const [key, value] of Object.entries(tool.extraFields?.(options) ?? {})) {
-    form.append(key, value);
+  form.append('tool', tool.id);
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined && value !== null && value !== '') form.append(key, value);
   }
+  for (const file of files) form.append('files', file, file.name);
   return form;
 }

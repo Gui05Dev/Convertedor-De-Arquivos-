@@ -154,19 +154,38 @@ ul { list-style: none; }
   transition: transform var(--transition);
 }
 
-/* Botão de alternar tema claro/escuro, no canto direito do header */
-.theme-toggle {
+/* Ações no canto direito do header: usuário, sair e tema */
+.header-actions {
   position: absolute;
   right: 15px;
   top: 50%;
   transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 15;
+}
+.header-user {
+  color: white; font-size: 13px; font-weight: 700;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.header-logout {
+  color: white; font-size: 13px; font-weight: 800;
+  padding: 7px 14px; border-radius: var(--radius-pill);
+  background: rgba(255,255,255,.14);
+  transition: background var(--transition);
+}
+.header-logout:hover { background: rgba(255,255,255,.24); }
+.header-logout:focus-visible, .theme-toggle:focus-visible { outline: 2.5px solid white; outline-offset: 2px; }
+
+/* Botão de alternar tema claro/escuro */
+.theme-toggle {
   width: 40px; height: 40px;
   border-radius: var(--radius-pill);
   display: flex; align-items: center; justify-content: center;
   color: white;
   background: rgba(255,255,255,.14);
   transition: background var(--transition);
-  z-index: 15;
 }
 .theme-toggle:hover { background: rgba(255,255,255,.24); }
 .theme-toggle svg { width: 19px; height: 19px; }
@@ -200,6 +219,7 @@ ul { list-style: none; }
   gap: 10px;
   margin-bottom: 1.5rem;
 }
+.section-heading h1,
 .section-heading h2 {
   font-family: var(--font-display);
   font-size: 12px;
@@ -225,6 +245,8 @@ ul { list-style: none; }
   gap: 16px;
 }
 .tool-card {
+  /* É um <button>: zera o que o navegador aplica a botões. */
+  font: inherit; color: inherit; text-align: left; width: 100%;
   background: var(--white);
   border: 1px solid var(--gray-150);
   border-radius: var(--radius-lg);
@@ -272,7 +294,7 @@ ul { list-style: none; }
 .tool-card:hover .card-icon-box { transform: scale(1.1); }
 .card-icon-box svg { width: 22px; height: 22px; }
 
-.card-body { flex: 1; }
+.card-body { flex: 1; display: flex; flex-direction: column; }
 .card-title { font-size: 14px; font-weight: 800; color: var(--gray-900); line-height: 1.3; margin-bottom: .3rem; }
 .card-desc  { font-size: 12px; color: var(--gray-500); line-height: 1.55; }
 
@@ -360,7 +382,10 @@ ul { list-style: none; }
   visibility: hidden;
   transition: opacity .25s ease, visibility .25s ease;
 }
-.modal-overlay.open { opacity: 1; visibility: visible; }
+/* Ao abrir, a visibilidade muda na hora (só a opacidade anima): no início de uma
+   transição de visibility o elemento ainda está "hidden" e o navegador ignora o
+   foco inicial no botão Fechar. */
+.modal-overlay.open { opacity: 1; visibility: visible; transition: opacity .25s ease, visibility 0s; }
 
 .modal-box {
   background: var(--white);
@@ -520,6 +545,22 @@ ul { list-style: none; }
   transition: width .3s ease; width: 0%;
 }
 .progress-status { font-size: 12px; color: var(--gray-500); text-align: center; }
+/* Barra indeterminada: o servidor não informa quanto falta, então a barra só indica
+   atividade — nada de porcentagem inventada. */
+.progress-bar-indeterminate {
+  height: 100%; width: 35%;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--green-600), var(--green-500));
+  animation: indeterminate 1.3s ease-in-out infinite;
+}
+@keyframes indeterminate {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(290%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-bar-indeterminate { animation: none; width: 100%; opacity: .5; }
+  .tool-card, .modal-box, .success-check { animation: none !important; transition: none !important; }
+}
 
 /* Success */
 .success-state { display: none; flex-direction: column; align-items: center; gap: 1rem; padding: 1rem 0; text-align: center; }
@@ -604,4 +645,84 @@ ul { list-style: none; }
   .tools-grid {
     grid-template-columns: 1fr !important; /* 1 card por linha */
   }
+}
+
+/* ══════════════════════════════════════════
+   v3 — acessibilidade, opções, arquivos recentes
+══════════════════════════════════════════ */
+.skip-link {
+  position: absolute; left: 1rem; top: -60px; z-index: 200;
+  background: var(--white); color: var(--gray-900);
+  padding: 8px 14px; border-radius: var(--radius-md); font-weight: 800;
+  box-shadow: var(--shadow-md);
+}
+.skip-link:focus { top: 1rem; }
+
+.modal-title { margin: 0; line-height: 1.3; }
+.modal-close:focus-visible, .btn-action:focus-visible, .btn-download:focus-visible,
+.file-item-remove:focus-visible, .file-item-move:focus-visible, .recent-btn:focus-visible {
+  outline: 2.5px solid var(--primary); outline-offset: 2px;
+}
+.dropzone:focus-within { border-color: var(--primary); box-shadow: 0 0 0 4px rgba(250,70,22,.18); }
+.dropzone.disabled { opacity: .55; pointer-events: none; }
+.dz-sub strong { text-decoration: underline; }
+
+.files-list { padding: 0; }
+.file-item-order { color: var(--gray-500); font-weight: 800; }
+.file-item-order-buttons { display: flex; gap: 4px; }
+.file-item-move {
+  width: 28px; height: 28px; border-radius: var(--radius-sm);
+  color: var(--gray-600); background: var(--gray-100); font-weight: 800;
+}
+.file-item-move:hover:not(:disabled) { background: var(--gray-150); }
+.file-item-move:disabled, .file-item-remove:disabled { opacity: .35; cursor: not-allowed; }
+
+.option-group { border: none; display: flex; flex-direction: column; gap: 6px; margin-bottom: .6rem; }
+.option-group legend { font-size: 12.5px; font-weight: 800; color: var(--gray-700); margin-bottom: 4px; }
+.extra-options .radio {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600; color: var(--gray-700); cursor: pointer;
+}
+.extra-options .radio input { width: auto; accent-color: var(--primary); }
+.extra-options input[type="range"] { accent-color: var(--primary); padding: 0; border: none; background: none; }
+
+.success-note { font-size: 12px; color: var(--gray-500); max-width: 420px; }
+.success-sub strong { color: var(--gray-800); word-break: break-word; }
+
+.loading-note, .privacy-note { font-size: 13px; color: var(--gray-500); }
+.privacy-note { margin-top: 2rem; text-align: center; }
+.load-error { display: flex; flex-direction: column; gap: 1rem; align-items: flex-start; }
+
+.recent { margin-top: 2.5rem; }
+.recent-note { font-size: 12.5px; color: var(--gray-500); margin: -0.75rem 0 1rem; }
+.recent-list { display: flex; flex-direction: column; gap: 8px; }
+.recent-item {
+  display: grid; grid-template-columns: 1fr auto auto auto; align-items: center; gap: 12px;
+  background: var(--white); border: 1px solid var(--gray-150);
+  border-radius: var(--radius-md); padding: .7rem 1rem;
+}
+.recent-main { display: flex; flex-direction: column; min-width: 0; }
+.recent-tool { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--gray-500); }
+.recent-name { font-size: 13px; font-weight: 700; color: var(--gray-800); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-status { justify-self: start; font-size: 11px; font-weight: 800; padding: 3px 10px; border-radius: var(--radius-pill); background: var(--gray-100); color: var(--gray-600); }
+.status-done .recent-status { background: var(--green-100); color: var(--green-700); }
+.status-failed .recent-status { background: var(--red-100); color: var(--red-500); }
+.status-failed .recent-name { white-space: normal; font-weight: 600; color: var(--red-500); }
+.recent-time { font-size: 12px; color: var(--gray-500); white-space: nowrap; }
+.recent-actions { display: flex; gap: 6px; }
+.recent-btn {
+  font-size: 12.5px; font-weight: 800; padding: 6px 14px; border-radius: var(--radius-pill);
+  background: var(--green-600); color: white;
+}
+.recent-btn-secondary { background: var(--gray-100); color: var(--gray-700); border: 1px solid var(--gray-150); }
+
+@media (max-width: 640px) {
+  .header-user { display: none; }
+  .header-logo { left: 15px; transform: translateY(-50%); }
+  .modal-footer { flex-wrap: wrap; }
+  .modal-footer > * { flex: 1 1 140px; }
+  .recent-item { grid-template-columns: 1fr auto; }
+  .recent-time { grid-column: 1; }
+  .recent-actions { grid-column: 2; grid-row: 1 / span 2; flex-direction: column; }
+  .modal-overlay { padding: .5rem; }
 }

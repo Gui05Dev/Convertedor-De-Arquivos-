@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { buildForm } from '../data/tools.js';
-import { uploadToApi } from '../api/client.js';
-import { isFileAccepted } from '../utils/format.js';
+import { createJob, deleteJob, downloadUrl, pollJob } from '../api/client.js';
+import { hasAcceptedExtension } from '../utils/format.js';
 import { useModalA11y } from '../hooks/useModalA11y.js';
 import { Dropzone } from './Dropzone.jsx';
 import { FileList } from './FileList.jsx';
@@ -11,128 +11,157 @@ import { ProgressPanel } from './ProgressPanel.jsx';
 import { SuccessPanel } from './SuccessPanel.jsx';
 import { BoltIcon, CloseIcon, DownloadIcon, SpinnerIcon } from './icons.jsx';
 
-/* Modal de uma ferramenta, do zero até o download.
+/* Modal de uma ferramenta, do arquivo escolhido até o download.
  *
- * O App monta este componente com `key={toolKey}`: trocar de ferramenta desmonta e
- * remonta, o que zera arquivos, opções, erro e progresso sem nenhuma rotina de reset.
- * É o que substitui o contador de sessão que a versão anterior usava pra descartar
- * resultados de um processamento que já não pertencia à tela aberta. */
+ * Fluxo: envio (progresso real em %) -> trabalho criado no servidor -> consulta do
+ * estado até terminar (etapa textual, sem % inventada) -> link de download protegido
+ * (/api/jobs/:id/download, só o dono baixa). O App monta com key={tool.id}: trocar de
+ * ferramenta remonta o modal com estado limpo. */
 
-const PHASE = { IDLE: 'idle', PROCESSING: 'processing', DONE: 'done' };
+const PHASE = { IDLE: 'idle', UPLOADING: 'uploading', PROCESSING: 'processing', DONE: 'done' };
+let fileKey = 0;
 
-export function ToolModal({ tool, limits, isOpen, onClose }) {
+export function ToolModal({ tool, limits, isOpen, onClose, onJobsChanged }) {
   const [files, setFiles] = useState([]);
   const [options, setOptions] = useState({});
   const [error, setError] = useState('');
   const [phase, setPhase] = useState(PHASE.IDLE);
-  const [progress, setProgress] = useState({ pct: 0, label: '', status: '' });
-  const [result, setResult] = useState(null);
+  const [uploadPct, setUploadPct] = useState(0);
+  const [stage, setStage] = useState('');
+  const [job, setJob] = useState(null);
 
   const overlayRef = useRef(null);
   const closeButtonRef = useRef(null);
   const abortRef = useRef(null);
-  const objectUrlRef = useRef(null);
-
-  const available = Boolean(tool.endpoint);
-  const isProcessing = phase === PHASE.PROCESSING;
+  const titleId = `modal-title-${tool.id}`;
+  const busy = phase === PHASE.UPLOADING || phase === PHASE.PROCESSING;
 
   useModalA11y(overlayRef, onClose);
-  useEffect(() => { closeButtonRef.current?.focus(); }, []);
-
-  /* Ao desmontar (fechar ou trocar de ferramenta): corta um upload em andamento pra não
-     ocupar o servidor à toa, e libera o blob do último resultado. */
-  useEffect(() => () => {
-    abortRef.current?.abort();
-    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-  }, []);
+  // O overlay nasce invisível (visibility: hidden) e só fica visível com a classe
+  // `open` no frame seguinte; foco em elemento invisível é ignorado pelo navegador,
+  // então o foco inicial espera o modal abrir de fato.
+  // Elementos com `transition: all` herdam a visibilidade com atraso de um frame,
+  // então tentamos por alguns frames até o foco pegar.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    let tries = 0;
+    let frame;
+    const attempt = () => {
+      const button = closeButtonRef.current;
+      button?.focus();
+      if (button && document.activeElement !== button && ++tries < 20) frame = requestAnimationFrame(attempt);
+    };
+    attempt();
+    return () => cancelAnimationFrame(frame);
+  }, [isOpen]);
+  // Fechar o modal cancela o ENVIO; um trabalho já criado continua no servidor e
+  // aparece em "Arquivos recentes".
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const addFiles = useCallback((incoming) => {
     setError('');
     const accepted = [];
-
     for (const file of incoming) {
-      if (!isFileAccepted(file, tool.accept)) {
-        setError(`Tipo de arquivo não suportado: ${file.name}`);
+      if (!hasAcceptedExtension(file, tool.acceptExtensions)) {
+        setError(`"${file.name}" não é um formato aceito aqui (${tool.acceptLabel}).`);
+        continue;
+      }
+      if (file.size === 0) {
+        setError(`"${file.name}" está vazio.`);
         continue;
       }
       if (file.size > limits.maxFileSizeBytes) {
         setError(`"${file.name}" excede o limite de ${limits.maxFileSizeLabel}.`);
         continue;
       }
-      accepted.push(file);
+      accepted.push({ key: ++fileKey, file });
     }
     if (!accepted.length) return;
-
     setFiles((current) => {
-      // Ferramenta de arquivo único sempre substitui a escolha anterior.
       const merged = tool.multiple ? [...current, ...accepted] : accepted.slice(0, 1);
-      if (merged.length > limits.maxFiles) {
-        setError(`O servidor aceita no máximo ${limits.maxFiles} arquivos por vez.`);
-        return merged.slice(0, limits.maxFiles);
+      if (merged.length > tool.maxFiles) {
+        setError(`Esta ferramenta aceita no máximo ${tool.maxFiles} arquivos por vez.`);
+        return merged.slice(0, tool.maxFiles);
       }
       return merged;
     });
   }, [tool, limits]);
 
-  const removeFile = useCallback((index) => {
-    setFiles((current) => current.filter((_, i) => i !== index));
+  const removeFile = useCallback((index) => setFiles((c) => c.filter((_, i) => i !== index)), []);
+  const moveFile = useCallback((index, delta) => {
+    setFiles((current) => {
+      const next = [...current];
+      const [item] = next.splice(index, 1);
+      next.splice(index + delta, 0, item);
+      return next;
+    });
   }, []);
 
   async function handleProcess() {
-    const required = tool.requiredOption;
-    if (required && !options[required.field]?.trim()) {
-      setError(required.message);
+    const missing = tool.required?.(options);
+    if (missing) { setError(missing); return; }
+    const total = files.reduce((sum, f) => sum + f.file.size, 0);
+    if (total > limits.maxTotalUploadMb * 1024 * 1024) {
+      setError(`O total selecionado passa do limite de ${limits.maxTotalUploadMb} MB por envio.`);
       return;
     }
 
     setError('');
-    setPhase(PHASE.PROCESSING);
-    setProgress({ pct: 0, label: 'Preparando arquivos...', status: 'Aguarde o processamento.' });
-
+    setPhase(PHASE.UPLOADING);
+    setUploadPct(0);
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
-      const uploaded = await uploadToApi({
-        path: tool.endpoint,
-        form: buildForm(tool, files, options),
-        fallbackName: tool.outputName,
+      const created = await createJob({
+        form: buildForm(tool, files.map((f) => f.file), options),
         signal: controller.signal,
-        onProgress: ({ pct, label }) => setProgress({ pct, label, status: 'Aguarde o processamento.' }),
+        onUploadProgress: ({ loaded, total: size }) => setUploadPct(Math.round((loaded / size) * 100)),
       });
+      setPhase(PHASE.PROCESSING);
+      setStage(created.stage);
+      onJobsChanged?.();
 
-      setProgress({ pct: 100, label: 'Concluído!', status: 'Concluído!' });
-
-      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = URL.createObjectURL(uploaded.blob);
-
-      triggerDownload(objectUrlRef.current, uploaded.name);
-      setResult({ url: objectUrlRef.current, name: uploaded.name, info: uploaded.info });
+      const finished = await pollJob(created.id, {
+        signal: controller.signal,
+        onUpdate: (update) => setStage(update.stage),
+      });
+      onJobsChanged?.();
+      if (finished.status === 'failed') {
+        setError(finished.error?.message || 'Não foi possível processar o arquivo.');
+        setPhase(PHASE.IDLE);
+        return;
+      }
+      setJob(finished);
       setPhase(PHASE.DONE);
     } catch (err) {
-      // AbortError só acontece quando o próprio usuário fechou o modal: o componente já
-      // está desmontando e não há tela pra avisar.
-      if (err.name === 'AbortError') return;
-      setError(err.message || 'Erro desconhecido ao processar o arquivo.');
+      if (err.name === 'AbortError') return; // modal fechado
+      setError(err.message || 'Erro ao processar o arquivo.');
       setPhase(PHASE.IDLE);
     } finally {
       abortRef.current = null;
     }
   }
 
-  function handleReset() {
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
+  async function handleDeleteNow() {
+    try {
+      await deleteJob(job.id);
+      onJobsChanged?.();
+      handleReset();
+    } catch (err) {
+      setError(err.message);
     }
+  }
+
+  function handleReset() {
     setFiles([]);
-    setResult(null);
+    setJob(null);
     setError('');
     setPhase(PHASE.IDLE);
   }
 
   const ToolIcon = tool.Icon;
-  const canProcess = available && files.length >= (tool.minFiles || 1);
+  const canProcess = files.length >= tool.minFiles && !busy;
 
   return (
     <div
@@ -140,15 +169,14 @@ export function ToolModal({ tool, limits, isOpen, onClose }) {
       className={`modal-overlay${isOpen ? ' open' : ''}`}
       role="dialog"
       aria-modal="true"
-      aria-label={tool.title}
+      aria-labelledby={titleId}
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div className="modal-box">
-
         <div className="modal-header">
-          <div className={`modal-icon ${tool.iconColor}`}><ToolIcon /></div>
+          <div className={`modal-icon ${tool.iconColor}`} aria-hidden="true"><ToolIcon /></div>
           <div className="modal-title-group">
-            <div className="modal-title">{tool.title}</div>
+            <h2 className="modal-title" id={titleId}>{tool.title}</h2>
             <div className="modal-subtitle">{tool.subtitle}</div>
           </div>
           <button ref={closeButtonRef} type="button" className="modal-close" aria-label="Fechar" onClick={onClose}>
@@ -159,82 +187,64 @@ export function ToolModal({ tool, limits, isOpen, onClose }) {
         <div className="modal-body">
           <ErrorBanner message={error} />
 
-          {!available ? (
-            <UnavailableNotice title={tool.title} />
-          ) : phase !== PHASE.DONE && (
+          {phase !== PHASE.DONE && (
             <>
               <Dropzone
-                accept={tool.accept}
+                accept={tool.acceptAttr}
+                acceptLabel={tool.acceptLabel}
                 multiple={tool.multiple}
                 sizeLabel={limits.maxFileSizeLabel}
-                disabled={isProcessing}
+                disabled={busy}
                 onFiles={addFiles}
               />
-              {files.length > 0 && <FileList files={files} onRemove={removeFile} />}
+              {files.length > 0 && (
+                <FileList files={files} onRemove={removeFile} onMove={moveFile} reorder={tool.reorder} disabled={busy} />
+              )}
               <ToolOptions
                 kind={tool.options}
                 options={options}
+                targets={tool.targets}
+                disabled={busy}
                 onChange={(patch) => setOptions((current) => ({ ...current, ...patch }))}
               />
             </>
           )}
 
-          {isProcessing && <ProgressPanel {...progress} />}
-          {phase === PHASE.DONE && result && (
-            <SuccessPanel message={result.info || `Download iniciado: ${result.name}`} />
-          )}
+          {busy && <ProgressPanel phase={phase} uploadPct={uploadPct} stage={stage} />}
+          {phase === PHASE.DONE && job && <SuccessPanel job={job} />}
         </div>
 
         <div className="modal-footer">
-          {phase === PHASE.DONE && result ? (
+          {phase === PHASE.DONE && job ? (
             <>
+              <button type="button" className="btn-action btn-secondary" onClick={handleDeleteNow}>
+                Apagar do servidor
+              </button>
               <button type="button" className="btn-action btn-secondary" onClick={handleReset}>
                 Novo arquivo
               </button>
-              <a className="btn-download" href={result.url} download={result.name}>
+              <a className="btn-download" href={downloadUrl(job.id)} download={job.result.name}>
                 <DownloadIcon />
-                Baixar novamente
+                Baixar
               </a>
             </>
           ) : (
             <>
               <button type="button" className="btn-action btn-secondary" onClick={onClose}>
-                Cancelar
+                {busy ? 'Fechar' : 'Cancelar'}
               </button>
               <button
                 type="button"
                 className="btn-action btn-process"
-                disabled={!canProcess || isProcessing}
+                disabled={!canProcess}
                 onClick={handleProcess}
               >
-                {isProcessing ? <><SpinnerIcon /> Processando...</> : <><BoltIcon /> {error ? 'Tentar novamente' : 'Processar'}</>}
+                {busy ? <><SpinnerIcon /> Processando...</> : <><BoltIcon /> {error ? 'Tentar novamente' : 'Processar'}</>}
               </button>
             </>
           )}
         </div>
-
       </div>
     </div>
   );
-}
-
-function UnavailableNotice({ title }) {
-  return (
-    <div style={{ textAlign: 'center', padding: '1.75rem 0', color: 'var(--gray-500)' }}>
-      <div style={{ fontSize: '2.5rem', marginBottom: '.75rem' }}>🚧</div>
-      <div style={{ fontWeight: 800, fontSize: 15, color: 'var(--gray-700)', marginBottom: '.35rem' }}>{title}</div>
-      <div style={{ fontSize: 13 }}>Esta ferramenta estará disponível em breve.</div>
-    </div>
-  );
-}
-
-/* O download começa sozinho assim que o arquivo chega; o botão "Baixar novamente" do
-   rodapé usa o mesmo blob, caso o usuário cancele o download do navegador. */
-function triggerDownload(url, name) {
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = name;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
 }

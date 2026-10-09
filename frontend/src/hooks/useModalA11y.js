@@ -28,6 +28,12 @@ export function useModalA11y(overlayRef, onClose) {
 
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
+      // Foco fora do modal (ex.: clique no fundo): Tab traz de volta pra dentro.
+      if (!overlay.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();

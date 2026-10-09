@@ -1,0 +1,176 @@
+# nginx do Conversor Copacol. Três papéis:
+#   1. entregar o build da SPA;
+#   2. exigir login (auth_request no oauth2-proxy) e proxiar /api pro backend,
+#      encaminhando o access token da sessão no header Authorization;
+#   3. (porta interna 8081) repassar SÓ o JWKS do Keycloak ao backend, que fica numa
+#      rede sem saída nenhuma.
+#
+# HTTPS: este nginx fica atrás do proxy reverso corporativo, que termina o TLS e envia
+# X-Forwarded-Proto. A porta publicada deve ficar acessível só para esse proxy.
+#
+# ${VARIAVEIS} são preenchidas no start pelo entrypoint oficial do nginx (envsubst).
+
+map $http_x_forwarded_proto $fwd_proto {
+    default $http_x_forwarded_proto;
+    ""      $scheme;
+}
+map $http_x_forwarded_host $fwd_host {
+    default $http_x_forwarded_host;
+    ""      $http_host;
+}
+
+server {
+    listen ${NGINX_PORT};
+    server_name _;
+    server_tokens off;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Corpo inteiro de um envio (vários arquivos + multipart). Precisa ser >= ao
+    # MAX_TOTAL_UPLOAD_MB do backend, senão o limite real passa a ser este.
+    client_max_body_size ${MAX_UPLOAD_SIZE};
+
+    include /etc/nginx/snippets/security-headers.conf;
+
+    gzip on;
+    gzip_types text/css application/javascript image/svg+xml application/json;
+    gzip_min_length 1024;
+
+    # DNS interno do Docker, reavaliado a cada 10 s: se um container reiniciar com
+    # outro IP, o proxy acompanha sem precisar reiniciar o nginx.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+
+    # Healthcheck do container (sem autenticação, sem dados).
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # ── Sessão (oauth2-proxy) ──
+    location /oauth2/ {
+        set $oauth2 ${OAUTH2_PROXY_UPSTREAM};
+        proxy_pass $oauth2$request_uri;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $fwd_proto;
+        proxy_set_header X-Forwarded-Host  $fwd_host;
+        proxy_set_header X-Auth-Request-Redirect $request_uri;
+        proxy_buffer_size 16k;
+        proxy_buffers 8 16k;
+    }
+
+    # Subrequisição de autenticação: 202 = sessão válida, 401 = sem sessão.
+    location = /oauth2/auth {
+        internal;
+        set $oauth2 ${OAUTH2_PROXY_UPSTREAM};
+        proxy_pass $oauth2/oauth2/auth;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length    "";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $fwd_proto;
+        proxy_set_header X-Forwarded-Uri   $request_uri;
+        proxy_buffer_size 16k;
+        proxy_buffers 8 16k;
+    }
+
+    # ── API: só com sessão válida ──
+    location /api/ {
+        auth_request /oauth2/auth;
+        # Token de acesso da sessão (o oauth2-proxy devolve no X-Auth-Request-Access-Token)
+        # e cookie renovado, quando a sessão é atualizada.
+        auth_request_set $access_token $upstream_http_x_auth_request_access_token;
+        auth_request_set $auth_cookie  $upstream_http_set_cookie;
+        add_header Set-Cookie $auth_cookie;
+        include /etc/nginx/snippets/security-headers.conf;
+        error_page 401 = @api_unauthorized;
+
+        set $backend ${BACKEND_ORIGIN};
+        proxy_pass $backend$request_uri;
+        proxy_http_version 1.1;
+
+        # O backend valida este token sozinho (assinatura, emissor, audiência).
+        # Qualquer header de identidade vindo do navegador é descartado.
+        proxy_set_header Authorization     "Bearer $access_token";
+        proxy_set_header Cookie            "";
+        proxy_set_header X-Forwarded-User  "";
+        proxy_set_header X-Auth-Request-User "";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $fwd_proto;
+
+        # Upload repassado conforme chega (progresso real na tela, sem cópia do arquivo
+        # no disco do nginx) e download sem arquivo temporário no nginx.
+        proxy_request_buffering off;
+        proxy_max_temp_file_size 0;
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    ${PROXY_TIMEOUT};
+        proxy_read_timeout    ${PROXY_TIMEOUT};
+    }
+
+    location @api_unauthorized {
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header WWW-Authenticate "Bearer" always;
+        default_type application/json;
+        return 401 '{"error":"Sua sessão expirou. Entre novamente.","code":"unauthenticated"}';
+    }
+
+    # Arquivos estáticos do build: não têm dado de usuário nem segredo, então não
+    # passam pelo login (evita uma subrequisição de autenticação por arquivo).
+    location /assets/ {
+        expires 1y;
+        access_log off;
+    }
+    location ~* ^/(fonts|img)/.+\.(woff2|png|svg|jpg|jpeg|ico)$ {
+        expires 30d;
+        access_log off;
+    }
+
+    # A página da aplicação exige sessão: sem ela, vai pro login do Keycloak.
+    location / {
+        auth_request /oauth2/auth;
+        auth_request_set $auth_cookie $upstream_http_set_cookie;
+        add_header Set-Cookie $auth_cookie;
+        include /etc/nginx/snippets/security-headers.conf;
+        error_page 401 = @login;
+        try_files $uri $uri/ /index.html;
+        expires -1;
+    }
+
+    location @login {
+        return 302 /oauth2/start?rd=$uri;
+    }
+}
+
+# ── Repasse do JWKS para o backend ──
+# Porta interna (não publicada). O backend fica numa rede Docker sem saída; a única
+# coisa que ele precisa de fora — as chaves públicas do Keycloak — vem por aqui.
+server {
+    listen 8081;
+    server_name _;
+    server_tokens off;
+    access_log off;
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+
+    location = /jwks {
+        limit_except GET { deny all; }
+        set $jwks ${OIDC_JWKS_UPSTREAM};
+        proxy_pass $jwks;
+        proxy_ssl_server_name on;
+        proxy_ssl_verify ${OIDC_TLS_VERIFY};
+        proxy_ssl_trusted_certificate ${OIDC_CA_FILE};
+        proxy_ssl_verify_depth 4;
+        proxy_set_header Cookie "";
+        proxy_set_header Authorization "";
+    }
+
+    location / {
+        return 404;
+    }
+}
