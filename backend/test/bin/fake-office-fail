@@ -1,0 +1,5 @@
+#!/bin/sh
+# Conversor falso que falha (código de saída != 0) depois de deixar lixo no diretório.
+echo "lixo" > parcial.tmp
+echo "erro interno do conversor" >&2
+exit 1

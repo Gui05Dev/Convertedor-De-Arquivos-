@@ -1,28 +1,42 @@
 'use strict';
 
-/* Erros com status HTTP embutido. O errorHandler traduz qualquer um destes na
-   resposta JSON; qualquer outro erro vira 500 genérico (sem vazar stack pro cliente). */
+/* Erros com status HTTP e mensagem segura pra mostrar ao usuário. O errorHandler
+   traduz qualquer um destes na resposta JSON; qualquer outro erro vira 500 genérico,
+   sem vazar caminho de arquivo ou stack. `code` é estável e vai pros logs. */
 class HttpError extends Error {
-  constructor(message, status) {
+  constructor(message, status, code = 'http_error') {
     super(message);
     this.name = this.constructor.name;
     this.status = status;
-    this.expose = true; // mensagem segura pra mostrar ao usuário
+    this.code = code;
+    this.expose = true;
   }
 }
 
-/** Entrada inválida do usuário (intervalo de páginas errado, ângulo inválido, etc.). */
+/** Entrada inválida do usuário (tipo de arquivo, intervalo de páginas, opção). */
 class ValidationError extends HttpError {
-  constructor(message) {
-    super(message, 400);
+  constructor(message, code = 'invalid_input') {
+    super(message, 400, code);
   }
 }
 
-/** Falha ao converter/processar o arquivo. 422 por padrão, 504 em timeout. */
+/** Falha ao converter/processar o arquivo. */
 class ConversionError extends HttpError {
-  constructor(message, status = 422) {
-    super(message, status);
+  constructor(message, code = 'conversion_failed', status = 422) {
+    super(message, status, code);
   }
 }
 
-module.exports = { HttpError, ValidationError, ConversionError };
+class TimeoutError extends ConversionError {
+  constructor() {
+    super('O processamento demorou demais e foi cancelado. Tente um arquivo menor.', 'timeout', 504);
+  }
+}
+
+class NotFoundError extends HttpError {
+  constructor(message = 'Trabalho não encontrado.') {
+    super(message, 404, 'not_found');
+  }
+}
+
+module.exports = { HttpError, ValidationError, ConversionError, TimeoutError, NotFoundError };

@@ -1,58 +1,48 @@
 'use strict';
 
-const express = require('express');
 const config = require('./config');
-const convertRoute = require('./routes/convert');
-const pdfRoute = require('./routes/pdf');
-const errorHandler = require('./middleware/errorHandler');
-const { HttpError } = require('./lib/errors');
+const { createLogger } = require('./lib/logger');
+const { createApp } = require('./app');
+const { startJanitor, sweep } = require('./jobs/janitor');
 
-/* API pura: este serviço não entrega mais HTML/CSS/JS. O frontend é um projeto
-   separado (../frontend), servido pelo nginx, que proxia /api pra cá. Assim o
-   backend pode ficar em rede privada e nada de config/credencial chega ao navegador. */
+async function main() {
+  const cfg = config.load();
+  const logger = createLogger({ level: cfg.logLevel });
 
-const app = express();
-app.disable('x-powered-by');
-app.set('trust proxy', true); // fica atrás do nginx do frontend
+  const problems = config.validate(cfg);
+  if (problems.length) {
+    for (const problem of problems) logger.error('config.invalid', { problem });
+    process.exit(78); // EX_CONFIG
+  }
 
-/* Sem CORS no deploy padrão: nginx proxia /api, então navegador e API compartilham a
-   origem. Só habilita se CORS_ORIGIN estiver preenchido no .env (backend exposto direto). */
-if (config.corsOrigin) {
-  app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', config.corsOrigin);
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Result-Info');
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
-    next();
+  const { app, store, queue, engines } = await createApp(cfg, { logger });
+  await sweep({ store, queue, logger });
+  const stopJanitor = startJanitor({ store, queue, logger, intervalSeconds: cfg.cleanupIntervalSeconds });
+
+  logger.info('startup', {
+    port: cfg.port, env: cfg.nodeEnv, auth: cfg.authMode,
+    engines: { libreoffice: engines.libreoffice, ghostscript: engines.ghostscript, pdf2docx: engines.pdf2docx, prlimit: Boolean(engines.prlimitPath) },
+    retention: { originalMinutes: cfg.originalRetentionMinutes, resultMinutes: cfg.resultRetentionMinutes },
   });
+  if (!engines.prlimitPath) logger.warn('startup.no_prlimit', { detail: 'limite de tamanho de saída dos conversores desativado' });
+
+  const server = app.listen(cfg.port);
+  // Uploads grandes em rede lenta: não derrubar antes do limite do nginx.
+  server.requestTimeout = cfg.jobTimeoutMs + 60_000;
+  server.headersTimeout = 60_000;
+
+  function shutdown(signal) {
+    logger.info('shutdown', { signal });
+    stopJanitor();
+    server.close(() => process.exit(0));
+    // Trabalhos em andamento são marcados como interrompidos no próximo boot.
+    setTimeout(() => process.exit(0), 10_000).unref();
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
-
-/* Limites que a tela precisa conhecer pra avisar o usuário antes do upload. Só valores
-   públicos — a validação de verdade acontece no servidor de qualquer forma. */
-app.get('/api/config', (req, res) => {
-  res.json({ maxFileSizeMb: config.maxFileSizeMb, maxFiles: config.maxFiles });
+main().catch((err) => {
+  process.stderr.write(`Falha ao iniciar: ${err?.message}\n`);
+  process.exit(1);
 });
-
-app.use('/api/pdf', pdfRoute);
-app.use('/api/convert', convertRoute);
-
-app.use('/api', (req, res, next) => next(new HttpError('Endpoint não encontrado.', 404)));
-app.use(errorHandler);
-
-const server = app.listen(config.port, () => {
-  console.log(`API do Copacol PDF Tools ouvindo na porta ${config.port} (${config.nodeEnv})`);
-});
-
-// Dá tempo de conversões em andamento terminarem antes do processo morrer
-// (docker stop manda SIGTERM; sem isso o Node encerra na hora e derruba requisições).
-function shutdown(signal) {
-  console.log(`${signal} recebido, encerrando graciosamente...`);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 10_000).unref();
-}
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));

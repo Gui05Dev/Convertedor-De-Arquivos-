@@ -1,0 +1,3 @@
+#!/bin/sh
+# Conversor falso que sai com sucesso sem produzir arquivo (o LibreOffice faz isso).
+exit 0
