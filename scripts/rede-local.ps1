@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Sobe o Conversor (homologação) neste computador Windows para ser acessado por outras
   pessoas da MESMA REDE, com o Keycloak de TESTE (usuários fictícios alice e bob).
